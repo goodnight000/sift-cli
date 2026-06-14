@@ -1,0 +1,31 @@
+{
+  "name": "@sift-wiki/cli",
+  "version": "0.1.3",
+  "type": "module",
+  "license": "UNLICENSED",
+  "description": "Sift CLI release artifact.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodnight000/sift-cli.git"
+  },
+  "homepage": "https://github.com/goodnight000/sift-cli#readme",
+  "bugs": {
+    "url": "https://github.com/goodnight000/sift-cli/issues"
+  },
+  "bin": {
+    "sift": "dist/bin/sift.js"
+  },
+  "files": [
+    "dist/bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "verify": "node scripts/verify-release.mjs"
+  }
+}

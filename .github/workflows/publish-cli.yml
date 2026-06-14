@@ -1,0 +1,48 @@
+name: Publish CLI
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Validate release tag
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const eventName = process.env.GITHUB_EVENT_NAME;
+          const refName = process.env.GITHUB_REF_NAME;
+          if (eventName === "workflow_dispatch") {
+            console.log(`CLI dry run for ${pkg.version}`);
+            process.exit(0);
+          }
+          const expected = `cli-v${pkg.version}`;
+          if (refName !== expected) {
+            throw new Error(`Expected tag ${expected}, got ${refName}`);
+          }
+          console.log(`Publishing ${pkg.name}@${pkg.version}`);
+          NODE
+
+      - name: Verify release package
+        run: npm run verify
+
+      - name: Publish to npm
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/cli-v')
+        run: npm publish --access public --provenance
