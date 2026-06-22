@@ -12,7 +12,7 @@ const binPath = join(root, "dist/bin/sift.js");
 const bin = await readFile(binPath, "utf8");
 
 assert.equal(pkg.name, "@sift-wiki/cli");
-assert.equal(pkg.version, "0.1.3");
+assert.equal(pkg.version, "0.1.4");
 assert.equal(pkg.bin?.sift, "dist/bin/sift.js");
 assert.deepEqual(pkg.files, ["dist/bin", "README.md"]);
 assert.equal(pkg.repository?.url, "git+https://github.com/goodnight000/sift-cli.git");

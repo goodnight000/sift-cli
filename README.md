@@ -1,13 +1,21 @@
 # Sift CLI
 
-This repository is the public release mirror for `@sift-wiki/cli`.
-
-The package installs the `sift` command:
+The intended public install path is npm:
 
 ```bash
 npm install -g @sift-wiki/cli
-sift login
-sift doctor
+```
+
+The package is live on the public npm registry and installs the `sift` command.
+This private monorepo owns CLI source and package verification. Public npm
+publishes are cut from the `goodnight000/sift-cli` release mirror so provenance
+can point at a public GitHub source repository.
+
+Repo maintainers can verify package changes before promoting a release artifact
+with:
+
+```bash
+pnpm --filter @sift-wiki/cli pack:verify
 ```
 
 For one-off use without a global install:
@@ -17,26 +25,27 @@ npx -y @sift-wiki/cli@latest auth status --json
 npm exec --yes --package @sift-wiki/cli@latest -- sift auth status --json
 ```
 
-## Release Shape
+The CLI bundles its own agent setup skill. An agent can install it before any
+other setup (this is the entry point of the local-agent onboarding prompt):
 
-The private Sift monorepo builds the bundled CLI artifact. This public repo
-contains only the files needed to publish the public npm package:
+```bash
+npx -y @sift-wiki/cli@latest skill install   # writes .claude/skills/sift-setup/SKILL.md
+sift skill print sift-cli                     # or print it to stdout
+sift skill list                               # list bundled skills
+```
 
-- `package.json`
-- `README.md`
-- `dist/bin/sift.js`
-- `scripts/verify-release.mjs`
-- `.github/workflows/publish-cli.yml`
+`sift skill` commands are local and need no auth.
 
-The bundled `dist/bin/sift.js` is the same artifact npm users receive.
+Then authenticate and check the installed command:
 
-## Maintainer Release
+```bash
+sift login
+sift doctor
+sift ask "what changed this week?"
+```
 
-1. Update `package.json` and `dist/bin/sift.js`.
-2. Run `npm run verify`.
-3. Commit and push to `main`.
-4. Tag `cli-v<package-version>`.
-5. Push the tag.
+The CLI is a hosted thin client. `sift login` is the normal setup path and opens
+the existing browser login flow.
 
-The tag workflow publishes through npm trusted publishing. It uses GitHub OIDC
-and does not require an npm token secret.
+For repo-local install details, troubleshooting, and advanced CI/headless
+env-token auth, see `docs/cli/install.md`.

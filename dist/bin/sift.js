@@ -137,6 +137,8 @@ function parseSearchQuery(input) {
 function parseContextQuery(input) {
   return {
     query: requireString(input, "query"),
+    queryIssuedAt: optionalString(input, "queryIssuedAt"),
+    timezone: optionalString(input, "timezone"),
     maxChars: requireInteger(input, "maxChars", 4e3)
   };
 }
@@ -375,6 +377,19 @@ function writeTool(name, summary, properties, cliExample, options) {
     hostedAgent: options?.hostedAgent
   });
 }
+function hostedAgentOnlyReadTool(name, summary, properties, options) {
+  return defineTool({
+    name,
+    summary,
+    properties,
+    required: options.required,
+    capability: "record:read",
+    mutability: "read",
+    transports: [],
+    cliExample: "",
+    hostedAgent: { available: true, ...options.hostedAgent }
+  });
+}
 function sourceWriteTool(name, summary, properties, cliExample) {
   return defineTool({
     name,
@@ -438,31 +453,8 @@ function defaultRiskClass(mutability) {
   return "low";
 }
 function defaultToolsets(name) {
-  const [prefix] = name.split(".");
-  switch (prefix) {
-    case "decision":
-    case "task":
-      return ["work"];
-    case "skill":
-      return ["brain", "work"];
-    case "record":
-    case "source":
-    case "capture":
-    case "ingestion":
-      return ["brain", "ingestion"];
-    case "search":
-    case "context":
-    case "evidence":
-    case "graph":
-      return ["brain", "retrieval"];
-    case "tools":
-      return ["registry"];
-    case "audit":
-    case "event":
-      return ["audit"];
-    default:
-      return ["brain"];
-  }
+  const [prefix = ""] = name.split(".");
+  return defaultToolsetsByPrefix[prefix] ?? ["brain"];
 }
 function defaultSearchTerms(name, summary) {
   return [.../* @__PURE__ */ new Set([...tokenize(name), ...tokenize(summary)])];
@@ -473,7 +465,7 @@ function tokenize(text) {
 function stringProps(names) {
   return Object.fromEntries(names.map((name) => [name, { type: "string" }]));
 }
-var readTransports, writeTransports, NO_CAPABILITY, toolDefinitions;
+var readTransports, writeTransports, NO_CAPABILITY, defaultToolsetsByPrefix, toolDefinitions;
 var init_registry = __esm({
   "../tools/dist/registry.js"() {
     "use strict";
@@ -483,6 +475,23 @@ var init_registry = __esm({
     readTransports = ["cli", "hosted_mcp", "local_mcp"];
     writeTransports = ["cli", "hosted_mcp", "local_mcp"];
     NO_CAPABILITY = "none";
+    defaultToolsetsByPrefix = {
+      audit: ["audit"],
+      capture: ["brain", "ingestion"],
+      context: ["brain", "retrieval"],
+      decision: ["work"],
+      event: ["audit"],
+      evidence: ["brain", "retrieval"],
+      graph: ["brain", "retrieval"],
+      ingestion: ["brain", "ingestion"],
+      record: ["brain", "ingestion"],
+      search: ["brain", "retrieval"],
+      skill: ["brain", "work"],
+      source: ["brain", "ingestion"],
+      task: ["work"],
+      tools: ["registry"],
+      web: ["web"]
+    };
     toolDefinitions = [
       readTool("contract.get", "Fetch the Sift agent contract (kernel + workspace overlay) and the contractVersion to echo on every gated tool call. Call this before any other Sift work.", {}, "sift contract get"),
       readTool("whoami", "Return principal, actor, scope, and capabilities.", {}, "sift whoami"),
@@ -601,14 +610,66 @@ var init_registry = __esm({
         severity: { type: "string" },
         visibility: { type: "array", items: { type: "string" } }
       }, "sift skill teach <skill-id> --lesson 'when X, do Y'", { required: ["skillId", "lesson", "visibility"] }),
-      readTool("search.query", "Search authorized brain context and return cited results.", {
+      readTool("search.query", "Search authorized brain context and return raw cited candidate results for exploration.", {
         query: { type: "string" },
         limit: { type: "integer", minimum: 1, maximum: 20 }
       }, "sift search query 'launch risks'"),
-      readTool("context.assemble", "Assemble compact cited context for an agent.", { query: { type: "string" }, maxChars: { type: "integer", minimum: 1 } }, "sift context assemble 'launch risks'", {
+      readTool("context.assemble", "Assemble grounded answer-preparation context with request time, caller identity, task guidance from visible Sift skills when available, safe source metadata, gaps, and raw cited fallback.", {
+        query: { type: "string" },
+        queryIssuedAt: { type: "string" },
+        timezone: { type: "string" },
+        maxChars: { type: "integer", minimum: 1 }
+      }, "sift context assemble 'launch risks'", {
+        required: ["query"],
         hostedAgent: {
           toolsets: ["brain", "retrieval"],
           searchTerms: ["context", "cite", "answer", "evidence"]
+        }
+      }),
+      hostedAgentOnlyReadTool("web.search", "Search public web sources for current or public facts.", {
+        query: {
+          type: "string",
+          description: "Public web search query. Do not include private Sift brain context unless the user explicitly provided it for public lookup."
+        },
+        limit: { type: "integer", minimum: 1, maximum: 10 },
+        recencyDays: { type: "integer", minimum: 1, maximum: 3650 },
+        allowedDomains: { type: "array", items: { type: "string" } },
+        blockedDomains: { type: "array", items: { type: "string" } }
+      }, {
+        required: ["query"],
+        hostedAgent: {
+          toolsets: ["web"],
+          searchTerms: [
+            "web",
+            "search",
+            "current",
+            "public",
+            "company",
+            "product",
+            "docs",
+            "news",
+            "pricing",
+            "people",
+            "law",
+            "rules"
+          ],
+          inputHints: ["query", "limit", "recencyDays", "allowedDomains", "blockedDomains"],
+          riskClass: "medium"
+        }
+      }),
+      hostedAgentOnlyReadTool("web.fetch", "Read one selected public URL through guarded bounded extraction.", {
+        url: {
+          type: "string",
+          description: "Public http(s) URL to fetch. Local, private, and metadata URLs are refused."
+        },
+        maxChars: { type: "integer", minimum: 1, maximum: 12e3 }
+      }, {
+        required: ["url"],
+        hostedAgent: {
+          toolsets: ["web"],
+          searchTerms: ["web", "fetch", "read", "url", "page", "extract", "public"],
+          inputHints: ["url", "maxChars"],
+          riskClass: "medium"
         }
       }),
       readTool("context.profile", "Read a permission-filtered profile context model.", {}, "sift context profile"),
@@ -713,6 +774,7 @@ var init_discovery = __esm({
     "use strict";
     init_registry();
     IMPLEMENTED_TOOL_NAMES = [
+      "contract.get",
       "whoami",
       "brain.list",
       "brain.use",
@@ -1034,7 +1096,9 @@ function runtimeAvailableToolNames(service) {
     [service.listGraphNeighbors !== void 0, ["graph.neighbors"]],
     [service.listEvents !== void 0, ["event.list"]],
     [service.getContextProfile !== void 0, ["context.profile"]],
-    [service.listAuditEvents !== void 0, ["audit.events"]]
+    [service.listAuditEvents !== void 0, ["audit.events"]],
+    [service.webSearch !== void 0, ["web.search"]],
+    [service.webFetch !== void 0, ["web.fetch"]]
   ];
   return [...baseNames, ...optionalNames.flatMap(([enabled, names]) => enabled ? names : [])];
 }
@@ -1112,6 +1176,73 @@ var init_toolLog = __esm({
   }
 });
 
+// ../tools/dist/webToolRuntime.js
+function webToolHandlers(input, toolInput) {
+  return {
+    "web.search": () => executeWebSearch(input, toolInput),
+    "web.fetch": () => executeWebFetch(input, toolInput)
+  };
+}
+function executeWebSearch(input, toolInput) {
+  if (input.service.webSearch === void 0) {
+    throw new Error("Tool 'web.search' is unavailable without a web search service contract.");
+  }
+  return input.service.webSearch({ auth: input.auth, ...parseWebSearch(toolInput) });
+}
+function executeWebFetch(input, toolInput) {
+  if (input.service.webFetch === void 0) {
+    throw new Error("Tool 'web.fetch' is unavailable without a web fetch service contract.");
+  }
+  return input.service.webFetch({ auth: input.auth, ...parseWebFetch(toolInput) });
+}
+function parseWebSearch(input) {
+  const parsed = {
+    query: requireString(input, "query"),
+    limit: requireBoundedInteger(input, "limit", 5, 1, 10)
+  };
+  if (input.recencyDays !== void 0) {
+    parsed.recencyDays = requireBoundedInteger(input, "recencyDays", 30, 1, 3650);
+  }
+  if (input.allowedDomains !== void 0) {
+    parsed.allowedDomains = requireBoundedStringArray(input, "allowedDomains", 10);
+  }
+  if (input.blockedDomains !== void 0) {
+    parsed.blockedDomains = requireBoundedStringArray(input, "blockedDomains", 10);
+  }
+  return parsed;
+}
+function parseWebFetch(input) {
+  return {
+    url: requireString(input, "url"),
+    maxChars: requireBoundedInteger(input, "maxChars", 8e3, 1, 12e3)
+  };
+}
+function requireBoundedStringArray(input, key, maxItems) {
+  const value = input[key];
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(`${key} must be a string array.`);
+  }
+  const values = value.map((item) => item.trim()).filter((item) => item.length > 0);
+  if (values.length > maxItems) {
+    throw new Error(`${key} must contain no more than ${maxItems} items.`);
+  }
+  return values;
+}
+function requireBoundedInteger(input, key, fallback, minimum, maximum) {
+  const value = input[key];
+  const integer = value === void 0 ? fallback : value;
+  if (!Number.isInteger(integer) || Number(integer) < minimum || Number(integer) > maximum) {
+    throw new Error(`${key} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return Number(integer);
+}
+var init_webToolRuntime = __esm({
+  "../tools/dist/webToolRuntime.js"() {
+    "use strict";
+    init_inputParsers();
+  }
+});
+
 // ../tools/dist/executor.js
 function createRuntimeToolExecutor(input) {
   const availableToolNames = runtimeAvailableToolNames(input.service);
@@ -1179,6 +1310,7 @@ function createToolHandlers(input, toolInput) {
     "context.profile": () => executeContextProfile(input, toolInput),
     "decision.create": () => executeDecisionCreate(input, toolInput),
     "task.create": () => executeTaskCreate(input, toolInput),
+    ...webToolHandlers(input, toolInput),
     ...skillToolHandlers(input, toolInput),
     ...agentIdentityToolHandlers(input, toolInput),
     ...contractToolHandlers(input),
@@ -1238,12 +1370,34 @@ function executeSearchQuery(input, toolInput) {
 }
 function executeContextAssemble(input, toolInput) {
   const query = parseContextQuery(toolInput);
+  if (input.service.assembleGroundedContext !== void 0) {
+    return input.service.assembleGroundedContext({
+      auth: input.auth,
+      query: query.query,
+      queryIssuedAt: query.queryIssuedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      timezone: query.timezone ?? "UTC",
+      requester: {
+        principalId: input.auth.principalId,
+        actorId: input.auth.actorId
+      },
+      surface: taskGuidanceSurface(input.transport),
+      limit: 8,
+      maxChars: query.maxChars
+    });
+  }
   return input.service.retrieveCitedContext({
     auth: input.auth,
     query: query.query,
     limit: 8,
     maxChars: query.maxChars
   });
+}
+function taskGuidanceSurface(transport) {
+  if (transport === "cli")
+    return "cli";
+  if (transport === "hosted_mcp" || transport === "local_mcp")
+    return "mcp";
+  return "app";
 }
 function executeContextProfile(input, toolInput) {
   if (input.service.getContextProfile === void 0) {
@@ -1356,6 +1510,7 @@ var init_executor = __esm({
     init_toolAvailability();
     init_results();
     init_toolLog();
+    init_webToolRuntime();
   }
 });
 
@@ -1394,7 +1549,7 @@ function createMcpAdapter(input) {
     ...IMPLEMENTED_TOOL_NAMES
   ];
   const availableNameSet = new Set(availableToolNames);
-  const available = listToolDefinitions().filter((tool) => availableNameSet.has(tool.name) && tool.transports.includes(input.transport) && input.capabilities.includes(tool.capability));
+  const available = listToolDefinitions().filter((tool) => availableNameSet.has(tool.name) && tool.transports.includes(input.transport) && isToolAuthorized(input.capabilities, tool));
   return {
     listTools() {
       return createMcpToolSchemas({
@@ -1546,89 +1701,41 @@ var init_hostedMcpEntrypoint = __esm({
   }
 });
 
-// ../tools/dist/localMcpStdioServer.js
-function createLocalMcpStdioServer(input) {
+// ../tools/dist/mcpJsonRpcCore.js
+function createMcpJsonRpcCore(input) {
+  const { adapter, config: config2 } = input;
   return {
-    async serve(serverInput) {
-      const adapter = createMcpAdapter({
-        transport: "local_mcp",
-        capabilities: serverInput.capabilities,
-        executor: serverInput.executor
-      });
-      let buffer = "";
-      input.input.setEncoding("utf8");
-      for await (const chunk of input.input) {
-        buffer += chunk;
-        let newline = buffer.indexOf("\n");
-        while (newline >= 0) {
-          const line = buffer.slice(0, newline).trim();
-          buffer = buffer.slice(newline + 1);
-          if (line.length > 0) {
-            await handleLine(line, adapter, input.output, input.error);
-          }
-          newline = buffer.indexOf("\n");
-        }
+    async handleMessage(message) {
+      if (message.id === void 0) {
+        return null;
       }
-      const trailing = buffer.trim();
-      if (trailing.length > 0) {
-        await handleLine(trailing, adapter, input.output, input.error);
+      const id = normalizeId(message.id);
+      if (message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+        return errorResponse(id, -32600, "Invalid Request");
+      }
+      try {
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: await dispatchRequest(message.method, message.params, adapter, config2)
+        };
+      } catch (err) {
+        return errorResponse(id, -32601, err instanceof Error ? err.message : "Method not found");
       }
     }
   };
 }
-async function handleLine(line, adapter, output, error) {
-  let message;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    writeResponse(output, {
-      jsonrpc: "2.0",
-      id: null,
-      error: { code: -32700, message: "Parse error" }
-    });
-    return;
-  }
-  if (message.id === void 0) {
-    if (message.method === "notifications/initialized")
-      return;
-    error?.write(`Ignoring MCP notification '${String(message.method)}'.
-`);
-    return;
-  }
-  const id = normalizeId(message.id);
-  if (message.jsonrpc !== "2.0" || typeof message.method !== "string") {
-    writeResponse(output, {
-      jsonrpc: "2.0",
-      id,
-      error: { code: -32600, message: "Invalid Request" }
-    });
-    return;
-  }
-  try {
-    writeResponse(output, {
-      jsonrpc: "2.0",
-      id,
-      result: await dispatchRequest(message.method, message.params, adapter)
-    });
-  } catch (err) {
-    writeResponse(output, {
-      jsonrpc: "2.0",
-      id,
-      error: {
-        code: -32601,
-        message: err instanceof Error ? err.message : "Method not found"
-      }
-    });
-  }
+function parseErrorResponse() {
+  return errorResponse(null, -32700, "Parse error");
 }
-async function dispatchRequest(method, params, adapter) {
+async function dispatchRequest(method, params, adapter, config2) {
   if (method === "initialize") {
     const requested = readProtocolVersion(params);
     return {
       protocolVersion: requested ?? MCP_PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "sift-local-mcp", version: "0.1.0" },
-      instructions: "Call contract.get first and echo its contractVersion on every other Sift tool call. Use Sift tools to read and write the hosted canonical brain."
+      serverInfo: { name: config2.serverName, version: config2.version },
+      instructions: config2.instructions
     };
   }
   if (method === "ping")
@@ -1639,7 +1746,7 @@ async function dispatchRequest(method, params, adapter) {
     const call = parseToolCall(params);
     return adapter.callTool(call);
   }
-  throw new Error(`Method '${method}' is not supported by Sift local MCP.`);
+  throw new Error(`Method '${method}' is not supported by Sift MCP.`);
 }
 function readProtocolVersion(params) {
   if (!isRecord(params))
@@ -1655,6 +1762,9 @@ function parseToolCall(params) {
     arguments: isRecord(params.arguments) ? params.arguments : {}
   };
 }
+function errorResponse(id, code, message) {
+  return { jsonrpc: "2.0", id, error: { code, message } };
+}
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1663,16 +1773,80 @@ function normalizeId(value) {
     return value;
   return null;
 }
+var MCP_PROTOCOL_VERSION;
+var init_mcpJsonRpcCore = __esm({
+  "../tools/dist/mcpJsonRpcCore.js"() {
+    "use strict";
+    MCP_PROTOCOL_VERSION = "2025-11-25";
+  }
+});
+
+// ../tools/dist/localMcpStdioServer.js
+function createLocalMcpStdioServer(input) {
+  return {
+    async serve(serverInput) {
+      const adapter = createMcpAdapter({
+        transport: "local_mcp",
+        capabilities: serverInput.capabilities,
+        executor: serverInput.executor
+      });
+      const core = createMcpJsonRpcCore({
+        adapter,
+        config: {
+          serverName: "sift-local-mcp",
+          version: "0.1.0",
+          instructions: LOCAL_INSTRUCTIONS
+        }
+      });
+      let buffer = "";
+      input.input.setEncoding("utf8");
+      for await (const chunk of input.input) {
+        buffer += chunk;
+        let newline = buffer.indexOf("\n");
+        while (newline >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line.length > 0) {
+            await handleLine(line, core, input.output, input.error);
+          }
+          newline = buffer.indexOf("\n");
+        }
+      }
+      const trailing = buffer.trim();
+      if (trailing.length > 0) {
+        await handleLine(trailing, core, input.output, input.error);
+      }
+    }
+  };
+}
+async function handleLine(line, core, output, error) {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    writeResponse(output, parseErrorResponse());
+    return;
+  }
+  if (message.id === void 0 && message.method !== "notifications/initialized") {
+    error?.write(`Ignoring MCP notification '${String(message.method)}'.
+`);
+  }
+  const response = await core.handleMessage(message);
+  if (response !== null) {
+    writeResponse(output, response);
+  }
+}
 function writeResponse(output, response) {
   output.write(`${JSON.stringify(response)}
 `);
 }
-var MCP_PROTOCOL_VERSION;
+var LOCAL_INSTRUCTIONS;
 var init_localMcpStdioServer = __esm({
   "../tools/dist/localMcpStdioServer.js"() {
     "use strict";
     init_mcpAdapter();
-    MCP_PROTOCOL_VERSION = "2025-11-25";
+    init_mcpJsonRpcCore();
+    LOCAL_INSTRUCTIONS = "Call contract.get first and echo its contractVersion on every other Sift tool call. Use Sift tools to read and write the hosted canonical brain.";
   }
 });
 
@@ -1686,11 +1860,13 @@ __export(dist_exports, {
   createHostedMcpEntrypoint: () => createHostedMcpEntrypoint,
   createLocalMcpStdioServer: () => createLocalMcpStdioServer,
   createMcpAdapter: () => createMcpAdapter,
+  createMcpJsonRpcCore: () => createMcpJsonRpcCore,
   createMcpToolSchemas: () => createMcpToolSchemas,
   createRuntimeToolExecutor: () => createRuntimeToolExecutor,
   isGatedTool: () => isGatedTool,
   isToolAuthorized: () => isToolAuthorized,
-  listToolDefinitions: () => listToolDefinitions
+  listToolDefinitions: () => listToolDefinitions,
+  parseErrorResponse: () => parseErrorResponse
 });
 var init_dist = __esm({
   "../tools/dist/index.js"() {
@@ -1700,13 +1876,14 @@ var init_dist = __esm({
     init_hostedMcpEntrypoint();
     init_localMcpStdioServer();
     init_mcpAdapter();
+    init_mcpJsonRpcCore();
     init_gating();
     init_registry();
   }
 });
 
 // src/index.ts
-import { readFile } from "fs/promises";
+import { readFile as readFile2 } from "fs/promises";
 
 // src/support.ts
 import { createHash } from "crypto";
@@ -2123,6 +2300,9 @@ function withContractVersion(executor, contractVersion) {
   };
 }
 
+// src/specialCommands.ts
+import { readFile } from "fs/promises";
+
 // src/doctor.ts
 async function doctor(input) {
   const checks = [
@@ -2287,6 +2467,7 @@ function toolNamesFromResult(result2) {
 // src/simpleCommands.ts
 var knownTopLevelCommands = /* @__PURE__ */ new Set([
   "add",
+  "agent",
   "ask",
   "audit",
   "auth",
@@ -2596,6 +2777,201 @@ function argsWithoutOptions(args) {
   return positionals;
 }
 
+// src/skill/skillCommands.ts
+import { access, mkdir as nodeMkdir, writeFile as nodeWriteFile } from "fs/promises";
+import { homedir } from "os";
+import { isAbsolute, join, resolve } from "path";
+
+// src/skill/skillContent.ts
+var SIFT_SETUP_SKILL_MARKDOWN = '---\nname: sift-setup\ndescription: Connect this agent to Sift, the team\'s shared cited brain, by setting up the Sift CLI: install it, have the human sign in, register this agent on the workspace, and confirm it works. Use this skill whenever the user pastes a Sift onboarding/setup prompt or says anything like "set up Sift", "connect me to Sift", "install the sift CLI", "sign me in to Sift", or "give you access to our brain" \u2014 even if they never say "CLI". This is first-run setup; once `sift doctor` is green you have full access and can use the brain. Hand off to the sift-cli skill for the full read/write playbook.\n---\n\n# Sift Setup\n\nSift is your team\'s shared, cited brain: context that people and agents both read\nand write. The `sift` CLI is how you reach it. Once the human signs in and you\nregister yourself, you are an agent on the workspace with full access \u2014 you read\nthe brain before answering and write back to it like a teammate.\n\nWork top to bottom. Each step says how to confirm it. If a step is genuinely\nblocked, say so and ask the human for the one thing you need \u2014 do not fake\nprogress. Never print token values, `.env` contents, or keychain secrets.\n\n## 1. Install the CLI\n\nThe package is `@sift-wiki/cli` (Node.js 20+); it installs a `sift` command.\n\n- If it will be used repeatedly, install it globally:\n\n  ```bash\n  npm install -g @sift-wiki/cli\n  ```\n\n- For a one-off or a sandbox, run it with no install: `npx -y\n  @sift-wiki/cli@latest <command>`.\n\nIf `sift` is missing right after a global install, npm\'s global bin directory is\nnot on `PATH` \u2014 find it with `npm config get prefix` and ensure `<prefix>/bin` is\non `PATH`. If the install fails, confirm Node is 20+ with `node --version`.\n\nConfirm: `sift auth status --json` runs (it will say `{"auth":"none"}` until\nsign-in \u2014 expected).\n\n## 2. The human signs in\n\n`sift login` opens the browser sign-in and stores the profile on this machine.\n\n- Run `sift login` (or ask the human to), then have them finish the approval in\n  the browser tab that opened. Wait for it to complete. One sign-in covers this\n  machine.\n- Headless box with no browser (CI, a remote runner): use env-token auth instead\n  with credentials the human provides \u2014 `SIFT_API_BASE_URL`, `SIFT_API_TOKEN`,\n  `SIFT_WORKSPACE_ID`, `SIFT_BRAIN_ID`, `SIFT_PRINCIPAL_ID`,\n  `SIFT_TOKEN_CAPABILITIES`. Never invent these.\n\nConfirm: `sift auth status --json` reports `"auth":"stored"` (sign-in) or\n`"auth":"env"` (token).\n\n## 3. Register yourself as an agent\n\nThis puts you on the workspace as an agent and signs your writes as you.\n\n- Set `SIFT_AGENT="<your product name>"` on every `sift` call (for example\n  `SIFT_AGENT="Claude Code"`), or pass `--as-agent "<name>"`. Use your own\n  product identity \u2014 never the human\'s name, never the device label.\n- Register once:\n\n  ```bash\n  sift agent register --name "<your product name>" --description "<one line>"\n  ```\n\n  Registration is idempotent and makes you visible to the workspace on the People\n  page. If your name is refused as "removed from this workspace," a human removed\n  it deliberately \u2014 stop and tell the user; do not assert a different name.\n\nConfirm: `sift agent status --json` shows your registration.\n\n## 4. Confirm it works\n\n```bash\nsift doctor --json\n```\n\nWhen the checks pass, you are connected with full access \u2014 say so. If a check\nfails, fix that one thing (missing command \u2192 install; missing auth \u2192 `sift\nlogin`; API unreachable \u2192 report the configured base URL and ask the human).\nDon\'t fall back to local files; local files are not the brain.\n\n## 5. Now use it \u2014 write like a teammate\n\nYou have full access. Treat Sift as your source of truth.\n\n- Read before answering: `sift ask "<question>"` or `sift search "<query>"`.\n- Before substantive work, run `sift context assemble "<task>"` or the equivalent\n  `sift ask` path and inspect any returned `## Task guidance` section. That\n  section may contain relevant workspace skills/custom prompts. Follow it before\n  producing output, and if you use a matched skill and your token can write,\n  record `skill.exercise` after the output.\n- **Write freely** for routine, non-destructive things \u2014 capturing notes,\n  context, decisions, and tasks (`sift remember`, `sift add`, `sift decide`,\n  `sift todo`). You don\'t need to ask permission to record what\'s worth keeping;\n  that\'s the job.\n- **Ask the human first only for important or destructive changes** \u2014 deleting or\n  overwriting existing records, editing someone else\'s work, or recording a\n  consequential decision. The test is simple: if it\'s hard to undo or could\n  mislead the team, confirm first; otherwise just do it.\n\nFor the full read/write playbook (context assembly, capture-before-derived,\npatching records, citations), load the companion skill:\n\n```bash\nsift skill print sift-cli\n```\n\n## Report back\n\nWhen setup is done, tell the human, without exposing secrets: which CLI path you\nused, the auth source (`stored`, `env`, or `none`), the agent name you\nregistered, and that the brain is reachable \u2014 or the one step that\'s blocked and\nwhat you need from them.\n';
+var SIFT_CLI_SKILL_MARKDOWN = '---\nname: sift-cli\ndescription: Use this skill whenever an agent needs to use the Sift CLI to read from or write to the Sift brain, including searching, assembling context, capturing text or files, patching records, creating decisions or tasks, debugging auth/scope, handling local API or sandbox failures, or falling back from missing `sift` on PATH. Prefer this skill for Sift CLI work even if the user only says "use Sift", "query the brain", "capture this", "remember this", "record a decision", or "what is latest in Sift".\n---\n\n# Sift CLI\n\nUse the Sift CLI as a thin client to the hosted Sift brain. The hosted brain is\ncanonical. Local files, terminal output, and chat text are not canonical until\ncaptured into Sift.\n\nThe CLI package is `@sift-wiki/cli` and it installs a `sift` bin. The package is\nlive on npm, npm-first, and Node.js 20+. Install or upgrade with `@latest`. It is\na command package, not a public SDK. Do not import it as a library, publish\ninternal Sift packages, or make local files a source of truth.\n\nInstall the live CLI with:\n\n```bash\nnpm install -g @sift-wiki/cli\n```\n\nThe CLI bundles its own agent skills, versioned with the package. The first-run\nsetup skill is `sift-setup`; `sift skill install` installs it by default (writes\n`.claude/skills/sift-setup/SKILL.md`; add `--global` for `~/.claude/skills` or\n`--dir <path>`). Install this usage skill on disk with\n`sift skill install sift-cli`, print any skill with `sift skill print <name>`,\nor list bundled skills with `sift skill list`. The zero-install setup entry point\nis `npx -y @sift-wiki/cli@latest skill install`, which works before any global\ninstall. These skill commands are local and need no auth.\n\nFor one-off or headless use without a global install, run the live package\ndirectly from npm:\n\n```bash\nnpx -y @sift-wiki/cli@latest auth status --json\nnpm exec --yes --package @sift-wiki/cli@latest -- sift auth status --json\n```\n\nFor CLI distribution changes inside the repo, build, pack, and verify the\ninstalled tarball with `pnpm --filter @sift-wiki/cli pack:verify` before a\nrelease. This private monorepo owns the CLI source and verifier; npm publishes\nare cut from the public `goodnight000/sift-cli` release mirror so npm provenance\ncan point at public GitHub release source.\n\n## Preflight\n\nBefore reading or writing, establish the command path, auth, and scope.\n\n1. Prefer installed `sift` when it exists on `PATH`.\n2. If `sift` is missing outside the repo and the user needs repeated\n   interactive use, install the live package with\n   `npm install -g @sift-wiki/cli`.\n3. If `sift` is missing outside the repo and the user needs one-off, CI, or\n   headless execution, use\n   `npm exec --yes --package @sift-wiki/cli@latest -- sift ...` or\n   `npx -y @sift-wiki/cli@latest ...`.\n4. For normal human setup, use `sift login`; it opens the existing browser login\n   flow and stores the CLI profile.\n5. For CI/headless agents only, use env-token auth when the user or environment\n   provides it: `SIFT_API_BASE_URL`, `SIFT_API_TOKEN`, `SIFT_WORKSPACE_ID`,\n   `SIFT_BRAIN_ID`, `SIFT_PRINCIPAL_ID`, and `SIFT_TOKEN_CAPABILITIES`.\n6. Do not print `.env` files, token values, keychain output, bearer secrets, or\n   full credential-store output.\n7. Check auth and scope with `sift auth status --json`, then\n   `sift scope current --json` when authenticated.\n8. Declare your agent identity on every invocation: set\n   `SIFT_AGENT="<your product name>"` (for example `SIFT_AGENT="Claude Code"`)\n   in the environment of each `sift` call, or pass `--as-agent "<name>"`. Use\n   your own product identity \u2014 never the device label and never the human\'s\n   name. This keeps authorship correct when several agents share one CLI\n   profile and token; your writes are stamped as you, acting for the human who\n   approved the token. A human running `sift` directly sets nothing and stays\n   plainly themselves.\n9. Once authenticated, check `sift agent status --json`; if it reports no\n   agent identity registration for your name, run `sift agent register` with\n   your product name and a one-line description. Registration is idempotent\n   (re-running converges on the same identity and refreshes the description),\n   requires only your usable token, and makes you visible to the workspace on\n   the People page. First use of a `SIFT_AGENT` name also auto-registers it;\n   explicit register is how you add a self-description.\n10. Run `sift doctor --json` when setup, auth, API reachability, or tool\n    availability is unclear.\n11. In the `sift-v3` repo only, if `sift` is missing and you need the\n    development CLI, build first and run the built JS entrypoint:\n\n    ```bash\n    pnpm --filter @sift-wiki/cli build\n    node packages/cli/dist/bin/sift.js auth status --json\n    ```\n\n12. Do not run TypeScript source as the CLI bin. The package bin points to\n    `dist/bin/sift.js`.\n13. If a local development API is required and down, report that directly. Do\n    not silently switch to local files.\n\nUse package verification only when the task is about distribution or installed\nartifact proof:\n\n```bash\npnpm --filter @sift-wiki/cli pack:verify\n```\n\nThat verifier packs `@sift-wiki/cli`, installs the tarball into an isolated npm\nprefix, runs installed unauthenticated `sift auth status --json`, then uses\nenv-token auth against a local fake hosted API to prove `auth status`,\n`whoami --json`, and `ask "package smoke" --json` with bearer, workspace, and\nbrain headers.\n\nStop and ask for the minimum missing permission or setup action when:\n\n- no runnable CLI path exists;\n- auth is missing or expired;\n- workspace or brain scope is missing;\n- the hosted/local API cannot be reached from the runtime;\n- sandbox/network restrictions block the command;\n- a required write is requested with read-only capabilities;\n- tool discovery says the required runtime contract is unavailable.\n- the user asks to publish a new CLI version that has not passed post-publish\n  install smoke.\n\n## Fast Read Path\n\nUse one focused context command before broad search loops.\n\nPreferred simple commands, when available:\n\n```bash\nsift "what is latest with the company?"\nsift ask "what changed since the last meeting?"\nsift search "Slack ingestion launch"\nsift status --json\nsift whoami --json\n```\n\nCurrent power-command fallback:\n\n```bash\nsift context assemble "what is latest with the company?" --max-chars 12000 --json\nsift search query "Slack ingestion launch" --json\nsift context profile "reviewer evidence" --limit 6 --json\n```\n\nRules:\n\n- Use `context assemble` for grounded answers, summaries, handoffs, write\n  preparation, and "latest/current" questions.\n- Before substantive work, inspect any returned `## Task guidance` section. It\n  may contain relevant workspace skills/custom prompts; follow the matched\n  skill/custom prompt before producing output.\n- If `## Task guidance` names a matched skill and you produce output informed by\n  it, call `skill exercise` / `skill.exercise` after the output when your token\n  can write. Use the skill id, pinned version id, surface, outputRef, and a\n  stable idempotency key. If the token is read-only, do not claim exercise\n  attribution was recorded.\n- Use `search query` for raw retrieval or to find candidate records.\n- Do not call `record get` until `tools list` or `doctor` proves it is backed by\n  the runtime; older slices may advertise it while returning `tool_unavailable`.\n- Keep broad context calls capped with `--max-chars`; increase only when the\n  returned context is too thin.\n- Include Sift citations, record IDs, version IDs, source IDs, headings, or\n  chunk locators when the CLI returns them.\n\n## Fast Write Path\n\nWrites must go through Sift tools, not local notes.\n\nPreferred simple commands, when available:\n\n```bash\nsift remember "Follow up with Caleb about the Underscore intro."\nsift remember --stdin\nsift add ./meeting-notes.md\nsift decide "Ship the retrieval-only slice first."\nsift todo "Collect three evidence examples for onboarding."\nsift edit <record-id> --section Risks --replace "..."\n```\n\nCurrent power-command fallbacks:\n\n```bash\nsift capture text \\\n  --source "CLI Capture" \\\n  --external-id "cli-text:<stable-id>" \\\n  --title "Follow up with Caleb" \\\n  --visibility team \\\n  --markdown "Follow up with Caleb about the Underscore intro."\n\nsift capture file ./meeting-notes.md \\\n  --source "CLI Capture" \\\n  --external-id "cli-file:<stable-id>" \\\n  --title "Meeting notes" \\\n  --visibility team\n\nsift decision create \\\n  --statement "Ship the retrieval-only slice first." \\\n  --state accepted \\\n  --visibility team\n\nsift task create \\\n  --title "Collect three evidence examples for onboarding." \\\n  --status open \\\n  --visibility team\n\nsift record patch-section <record-id> risks \\\n  --replacement-markdown "..." \\\n  --expected-markdown "..."\n```\n\nRules:\n\n- Verify the token has `record:write` before writes.\n- Verify the token has `source:write` before `remember`, `add`, `capture text`,\n  `capture file`, or `capture batch`.\n- Prefer capture before derived records when the user supplies raw source.\n- Use stable external IDs for capture retries.\n- Read a record before patching it, and include expected content when available.\n- If a conflict is returned, surface current version metadata and do not\n  overwrite.\n- Print or summarize write receipts with record, version, source item, and job\n  IDs. Do not claim a write happened without a receipt.\n\n## Troubleshooting\n\nClassify failures before retrying.\n\n- **Command missing:** for repeated interactive use, install the live package\n  with `npm install -g @sift-wiki/cli`. For one-off or headless use, run\n  `npm exec --yes --package @sift-wiki/cli@latest -- sift ...` or\n  `npx -y @sift-wiki/cli@latest ...`. In `sift-v3`, build and use\n  `node packages/cli/dist/bin/sift.js` as the development fallback when working\n  on unpublished local CLI changes.\n- **Auth missing:** run or request `sift login`; use env-token auth only when it\n  is explicitly provided for CI/headless use.\n- **Read-only token:** reads may proceed, writes must stop.\n- **API down:** report the configured API base URL and failure class.\n- **Sandbox network block:** rerun with approved escalation only when the user\n  asked for live CLI execution and policy allows it.\n- **Local listener blocked:** `pack:verify` uses a fake API on `127.0.0.1`; if\n  the sandbox returns `listen EPERM`, rerun with approved escalation instead of\n  weakening the installed-artifact test.\n- **Tool unavailable:** use `tools list`, `tools help`, or `doctor`; do not\n  retry the same unsupported command repeatedly.\n- **Agent identity refused:** a `SIFT_AGENT` name that returns "has been\n  removed from this workspace" was deliberately removed by a human. Stop and\n  tell the user; do not work around it by asserting a different name.\n- **`agent` commands unavailable:** the installed CLI or the API predates\n  agent workers; proceed without identity assertion and note the limitation.\n- **GitHub Actions publish blocked:** package publishing runs from the public\n  `goodnight000/sift-cli` release mirror. The private `sift-v3` workflow is\n  verify-only; do not publish `@sift-wiki/cli` from the private repo.\n- **Large output:** reduce `--max-chars`, search more narrowly, then assemble\n  context for the narrowed query.\n\n## Expected Response\n\nWhen answering the user after CLI work:\n\n- State which CLI path was used: installed `sift`, zero-install `npx`/`npm exec`,\n  built repo JS, or verified packed tarball.\n- State the auth source only at a safe level: `stored`, `env`, or `none`.\n- State the agent identity asserted (the `SIFT_AGENT` name), or that none was\n  set.\n- State the API scope used without exposing secrets.\n- Summarize the answer or write result in normal prose.\n- Include Sift citations or write receipt IDs.\n- Call out limitations such as read-only auth, local API dependency, missing\n  runtime contract, sandbox escalation, unpublished package version, or\n  stale/unverified context.\n';
+var SIFT_AGENT_SKILL_MARKDOWN = '---\nname: sift-agent\ndescription: Use this skill whenever an external coding or research agent needs to read from, capture into, patch, or create work objects in a Sift brain through Sift CLI or MCP tools. Prefer this skill when the user mentions Sift, the hosted brain, brain records, captured source, cited context, decisions, tasks, or choosing between CLI and MCP access.\n---\n\n# Sift Agent\n\nUse Sift as the canonical shared brain for accumulated human and agent context.\nThe hosted Sift brain is canonical. Local files are not canonical brain state\nunless they have been captured into Sift; local files are not canonical by\nthemselves.\n\n## The Contract Comes First\n\nBefore any other Sift work, fetch the Sift agent contract and read it:\n\n- CLI: run `sift contract get --json`.\n- MCP: call `contract.get`.\n\nThe contract is the authoritative protocol (reading, writing, the learning\nloop, restraint) plus this workspace\'s own rules. Echo the returned\n`contractVersion` in the input of every other tool call (CLI: pass\n`--contract <version>`). A call refused with `contract_required` returns the\ncurrent contract in the error message \u2014 read it and retry with the new\nversion. The full rules live in the served contract, not in this file.\n\n## Transport Choice\n\nAgents should prefer CLI when it is already installed, authenticated, and\nscoped; otherwise use MCP.\n\n1. Prefer CLI when `sift` is installed, authenticated, and already scoped to the\n   correct workspace and brain.\n2. Use MCP when CLI is unavailable, unauthenticated, unscoped, or blocked by the\n   runtime.\n3. Do not ask the user to install CLI during the task if MCP tools are already\n   available.\n4. Treat both CLI and MCP as access transports. Do not treat local markdown,\n   local manifests, or chat transcript text as canonical storage.\n\n## First Checks\n\nAfter fetching the contract, establish identity and scope:\n\n- CLI: run `sift scope current --json` or `sift whoami --json`.\n- MCP: call `scope.current` or `whoami`.\n\nIf the tool reports missing scope, expired auth, or insufficient capability,\nreturn the compact tool error and ask for the minimum permission or reconnect\naction needed. Do not guess a workspace, brain, source, or principal.\n\n## Agent Identity\n\nDeclare who you are so your writes are authored as you, acting for the human\nwho approved the token:\n\n1. Set `SIFT_AGENT="<your product name>"` (for example "Claude Code") in the\n   environment of every CLI invocation, or pass `--as-agent "<name>"`. Use\n   your own product identity \u2014 never the device label and never the human\'s\n   name. First use auto-registers you as a workspace agent worker, visible on\n   the People page.\n2. Check `sift agent status --json` (CLI) or `agent.status` (MCP); register a\n   one-line self-description with `sift agent register --name "<name>"\n   --description "<one line>"` or `agent.register`. Registration is idempotent\n   and requires only your usable token.\n3. Identity is authorship, not authority: asserting a name never changes what\n   the token may read or write.\n4. If your asserted name is refused as removed from the workspace, stop and\n   tell the user; do not assert a different name to work around it.\n\n## Search And Context\n\nSearch and assemble context before answering from memory:\n\n1. Use `search.query` for targeted lookup.\n2. Use `context.assemble` when the user needs a grounded answer, handoff, patch,\n   decision, or task.\n3. Before substantive work, inspect any returned `## Task guidance` section.\n   It may contain the relevant workspace skills/custom prompts for this task;\n   follow the matched skill/custom prompt before producing output.\n4. Use `context.profile` only for durable profile or workspace context.\n5. Keep responses grounded in returned Sift citations. Do not invent facts\n   outside the brain.\n\nCite record IDs, version IDs, source IDs, source item IDs, heading anchors, and\nchunk locators when the tool returns them. Prefer compact cited summaries over\ndumping large content.\n\nIf `## Task guidance` names a matched skill and you produce output informed by\nit, call `skill.exercise` after the output when your token can write. Use the\nskill id, pinned version id, surface (`cli`, `mcp`, or `api`), an outputRef, and\na stable idempotency key. If your token is read-only, do not claim exercise\nattribution was recorded.\n\n## Capture And Derived Writes\n\nCapture raw source before creating derived knowledge when possible:\n\n1. Use `capture.text` for copied text or markdown.\n2. Use `capture.file` for local files; the file path is only an input, not\n   canonical brain state.\n3. Use `capture.batch` for bounded repeatable imports.\n4. Reuse stable external IDs or idempotency keys when retrying capture.\n\nOnly create a derived markdown record after the relevant raw source is captured\nor after the user explicitly asks for an authored record without source capture.\n\n## Records And Patches\n\nRead the current record version before editing. Patch bounded sections instead\nof rewriting whole records:\n\n- Use `record.get` to inspect the current record or requested section.\n- Patch bounded sections with `record.patch_section`.\n- Include expected content when available so conflicts are detected.\n- If a patch conflict is returned, show the current version metadata and ask for\n  the next edit boundary. Do not silently overwrite.\n\n## Decisions And Tasks\n\nCreate decisions and tasks only from explicit user intent or grounded context:\n\n- Use `decision.create` when the user asks to record a decision or the context\n  clearly contains a chosen course of action.\n- Use `task.create` when the user asks to track follow-up work or the context\n  clearly assigns a next action.\n- Include rationale or explicit authorship.\n- Link evidence when available.\n- Do not create thread-like records; `thread.create` is unavailable until the\n  Collaboration Threads spec owns that behavior.\n\n## Safety Boundaries\n\n- Do not use destructive forget, delete, broad admin, connector OAuth install,\n  or hosted-agent run-control tools in this first tool slice.\n- Do not expose token values, secrets, raw private snippets, or full provider\n  payloads in logs or user-facing messages.\n- Preserve principal, actor, request, workspace, brain, and source scope across\n  tool calls.\n- If a permission denial hides a private object, do not reveal private\n  existence, title, count, or snippet.\n';
+
+// src/skill/skillCommands.ts
+var BUNDLED_SKILLS = [
+  {
+    name: "sift-setup",
+    summary: "Set up the Sift CLI and connect this agent to the brain (first run).",
+    markdown: SIFT_SETUP_SKILL_MARKDOWN
+  },
+  {
+    name: "sift-cli",
+    summary: "Set up and use the Sift CLI as a thin client to the hosted brain.",
+    markdown: SIFT_CLI_SKILL_MARKDOWN
+  },
+  {
+    name: "sift-agent",
+    summary: "Read, capture, and patch the Sift brain over CLI or MCP.",
+    markdown: SIFT_AGENT_SKILL_MARKDOWN
+  }
+];
+var DEFAULT_SKILL = "sift-setup";
+function defaultSkillIo(input) {
+  return {
+    writeFile: (path, data) => nodeWriteFile(path, data, "utf8"),
+    mkdir: async (path) => {
+      await nodeMkdir(path, { recursive: true });
+    },
+    pathExists: async (path) => {
+      try {
+        await access(path);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    homeDir: input?.homeDir ?? homedir(),
+    cwd: input?.cwd ?? process.cwd()
+  };
+}
+async function runSkillCommand(input) {
+  const [subcommand, ...rest] = input.rest;
+  if (subcommand === void 0 || subcommand === "list") {
+    return listSkills(input.json);
+  }
+  if (subcommand === "print" || subcommand === "show") {
+    return printSkill(rest, input.json);
+  }
+  if (subcommand === "install") {
+    return installSkill(rest, input.json, input.io);
+  }
+  return errorResultWithCode(
+    "tool_unavailable",
+    `Unknown skill subcommand '${subcommand}'. Use 'list', 'print [name]', or 'install [name]'.`,
+    input.json
+  );
+}
+function listSkills(json) {
+  if (json) {
+    return ok(
+      `${JSON.stringify({
+        skills: BUNDLED_SKILLS.map(({ name, summary }) => ({ name, summary }))
+      })}
+`
+    );
+  }
+  const lines = BUNDLED_SKILLS.map((skill) => `${skill.name}: ${skill.summary}`);
+  return ok(`${lines.join("\n")}
+`);
+}
+function printSkill(rest, json) {
+  const requested = positionalArgs(rest)[0];
+  const skill = findSkill(requested);
+  if (skill === void 0) {
+    return unknownSkill(requested, json);
+  }
+  if (json) {
+    return ok(`${JSON.stringify({ skill: skill.name, markdown: skill.markdown })}
+`);
+  }
+  return ok(withTrailingNewline(skill.markdown));
+}
+async function installSkill(rest, json, io) {
+  const requested = positionalArgs(rest)[0];
+  const skill = findSkill(requested);
+  if (skill === void 0) {
+    return unknownSkill(requested, json);
+  }
+  const parsed = parseOptions(rest);
+  const baseDir = resolveBaseDir({ rest, parsed, io });
+  const targetDir = join(baseDir, skill.name);
+  const targetPath = join(targetDir, "SKILL.md");
+  const existed = await io.pathExists(targetPath);
+  await io.mkdir(targetDir);
+  const markdown = withTrailingNewline(skill.markdown);
+  await io.writeFile(targetPath, markdown);
+  const status2 = existed ? "updated" : "created";
+  if (json) {
+    return ok(
+      `${JSON.stringify({
+        installed: true,
+        skill: skill.name,
+        path: targetPath,
+        status: status2,
+        bytes: Buffer.byteLength(markdown, "utf8")
+      })}
+`
+    );
+  }
+  return ok(renderInstall(skill.name, targetPath, status2));
+}
+function resolveBaseDir(input) {
+  const explicit = optionalOption(input.parsed, "dir");
+  if (explicit !== void 0) {
+    return isAbsolute(explicit) ? explicit : resolve(input.io.cwd, explicit);
+  }
+  if (input.rest.includes("--global")) {
+    return join(input.io.homeDir, ".claude", "skills");
+  }
+  return resolve(input.io.cwd, ".claude", "skills");
+}
+function findSkill(name) {
+  const target = name ?? DEFAULT_SKILL;
+  return BUNDLED_SKILLS.find((skill) => skill.name === target);
+}
+function unknownSkill(name, json) {
+  const available = BUNDLED_SKILLS.map((skill) => skill.name).join(", ");
+  return errorResultWithCode(
+    "validation_failure",
+    `Unknown skill '${name}'. Available skills: ${available}.`,
+    json
+  );
+}
+function renderInstall(name, path, status2) {
+  const verb = status2 === "created" ? "Installed" : "Updated";
+  return [
+    `${verb} the Sift skill: ${name}`,
+    `Path: ${path}`,
+    "",
+    "Next, open that SKILL.md and follow it to finish setup:",
+    "  1. Put the CLI on PATH:   npm install -g @sift-wiki/cli",
+    "  2. Authenticate:          sift login",
+    '  3. Identify yourself:     set SIFT_AGENT to your product name (e.g. "Claude Code"), then sift agent register',
+    "  4. Confirm:               sift doctor",
+    "",
+    "Then use Sift as your source of truth: search and assemble context before",
+    "answering, and capture decisions and notes back into the brain.",
+    ""
+  ].join("\n");
+}
+function withTrailingNewline(markdown) {
+  return markdown.endsWith("\n") ? markdown : `${markdown}
+`;
+}
+
+// src/specialCommands.ts
+async function runSpecialCommand(input, args, json, group, command) {
+  if (group === "doctor" && command === void 0) {
+    return doctor({
+      config: input.config,
+      executor: input.executor,
+      json,
+      now: input.now ?? /* @__PURE__ */ new Date()
+    });
+  }
+  if (group === "skill") {
+    const io = input.skillIo ?? defaultSkillIo({ cwd: input.cwd, homeDir: input.homeDir });
+    return runSkillCommand({ rest: args.slice(1), json, io });
+  }
+  const simpleCommand = resolveSimpleCommand({
+    args,
+    json,
+    config: input.config,
+    executor: input.executor,
+    readFile: input.readFile ?? readFile,
+    readStdin: input.readStdin,
+    now: input.now ?? /* @__PURE__ */ new Date()
+  });
+  if (simpleCommand === void 0) return void 0;
+  try {
+    validateAuthenticatedScope(input.config, input.now ?? /* @__PURE__ */ new Date());
+    validateCommandCapability({ commandKey: simpleCommand.commandKey, config: input.config });
+    return await simpleCommand.run();
+  } catch (error) {
+    return errorResult(error, json);
+  }
+}
+
 // src/toolDiscovery.ts
 function toolsList(input) {
   if (input.executor !== void 0) {
@@ -2730,8 +3106,8 @@ async function runSiftCli(rawInput) {
       json
     }),
     "capture:text": () => captureText(input.executor, rest, json),
-    "capture:file": () => captureFile(input.executor, input.readFile ?? readFile, rest, json),
-    "capture:batch": () => captureBatch(input.executor, input.readFile ?? readFile, rest, json),
+    "capture:file": () => captureFile(input.executor, input.readFile ?? readFile2, rest, json),
+    "capture:batch": () => captureBatch(input.executor, input.readFile ?? readFile2, rest, json),
     "source:list": () => sourceList(input.executor, json),
     "source:create": () => sourceCreate(input.executor, rest, json),
     "source:get": () => sourceRead(input.executor, "get", rest, json),
@@ -2742,9 +3118,30 @@ async function runSiftCli(rawInput) {
     "record:create-markdown": () => createMarkdownRecord(input.executor, rest, json),
     "record:patch-section": () => patchRecordSection(input.executor, rest, json),
     "record:versions": () => recordRead(input.executor, "record.versions", rest, json),
-    "evidence:list": () => idTool({ executor: input.executor, toolName: "evidence.list", inputKey: "recordId", idLabel: "record ID", rest, json }),
-    "evidence:get": () => idTool({ executor: input.executor, toolName: "evidence.get", inputKey: "evidenceId", idLabel: "evidence ID", rest, json }),
-    "graph:neighbors": () => idTool({ executor: input.executor, toolName: "graph.neighbors", inputKey: "recordId", idLabel: "record ID", rest, json }),
+    "evidence:list": () => idTool({
+      executor: input.executor,
+      toolName: "evidence.list",
+      inputKey: "recordId",
+      idLabel: "record ID",
+      rest,
+      json
+    }),
+    "evidence:get": () => idTool({
+      executor: input.executor,
+      toolName: "evidence.get",
+      inputKey: "evidenceId",
+      idLabel: "evidence ID",
+      rest,
+      json
+    }),
+    "graph:neighbors": () => idTool({
+      executor: input.executor,
+      toolName: "graph.neighbors",
+      inputKey: "recordId",
+      idLabel: "record ID",
+      rest,
+      json
+    }),
     "event:list": () => executeSimple2(input.executor, "event.list", {}, json),
     "audit:events": () => auditEvents(input.executor, rest, json),
     "decision:create": () => createDecision(input.executor, rest, json),
@@ -2765,7 +3162,7 @@ async function runSiftCli(rawInput) {
     );
   }
   try {
-    if (isAuthCommand(commandKey)) {
+    if (isAuthCommand(commandKey) || commandKey === "mcp:serve") {
       return await handler();
     }
     validateAuthenticatedScope(input.config, input.now ?? /* @__PURE__ */ new Date());
@@ -2775,34 +3172,12 @@ async function runSiftCli(rawInput) {
     return errorResult(error, json);
   }
 }
-async function runSpecialCommand(input, args, json, group, command) {
-  if (group === "doctor" && command === void 0) {
-    return doctor({ config: input.config, executor: input.executor, json, now: input.now ?? /* @__PURE__ */ new Date() });
-  }
-  const simpleCommand = resolveSimpleCommand({
-    args,
-    json,
-    config: input.config,
-    executor: input.executor,
-    readFile: input.readFile ?? readFile,
-    readStdin: input.readStdin,
-    now: input.now ?? /* @__PURE__ */ new Date()
-  });
-  if (simpleCommand === void 0) return void 0;
-  try {
-    validateAuthenticatedScope(input.config, input.now ?? /* @__PURE__ */ new Date());
-    validateCommandCapability({ commandKey: simpleCommand.commandKey, config: input.config });
-    return await simpleCommand.run();
-  } catch (error) {
-    return errorResult(error, json);
-  }
-}
-async function mcpServe(mcpServer, config2, executor, json) {
+async function mcpServe(mcpServer, config2, executor, _json) {
   if (mcpServer === void 0) {
     return fail("No local MCP server is configured for mcp.serve.");
   }
   if (executor === void 0) {
-    return fail("No Sift API executor is configured for mcp.serve.");
+    return fail("Not signed in. Run 'sift login', then 'sift mcp serve'.");
   }
   const result2 = await mcpServer.serve({ config: config2, executor, transport: "local_mcp" });
   if (result2 === void 0) return ok("");
@@ -3127,15 +3502,18 @@ async function idTool(input) {
 }
 
 // src/auth/configStore.ts
-import { mkdir, readFile as readFile2, rm, writeFile, chmod } from "fs/promises";
-import { dirname, join } from "path";
+import { mkdir, readFile as readFile3, rm, writeFile, chmod } from "fs/promises";
+import { dirname, join as join2 } from "path";
+function refreshSlotTokenId(tokenId) {
+  return `refresh:${tokenId}`;
+}
 function resolveSiftConfigPath(input) {
-  return join(input.homeDir, ".sift", "config.json");
+  return join2(input.homeDir, ".sift", "config.json");
 }
 async function readStoredSiftConfig(input) {
   let raw;
   try {
-    raw = await readFile2(resolveSiftConfigPath(input), "utf8");
+    raw = await readFile3(resolveSiftConfigPath(input), "utf8");
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return void 0;
@@ -3168,18 +3546,19 @@ async function loadCliAuthConfig(input) {
   if (profile === void 0) {
     throw new Error(`Stored Sift profile '${stored.currentProfile}' was not found.`);
   }
-  if (Date.parse(profile.tokenExpiresAt) <= input.now.getTime()) {
-    throw new Error("Stored Sift CLI auth has expired; run `sift login` again.");
-  }
-  const token = await input.credentialStore.read({
-    apiBaseUrl: profile.apiBaseUrl,
-    tokenId: profile.tokenId
+  const tokenKind = profile.tokenKind ?? "legacy";
+  const expired = Date.parse(profile.tokenExpiresAt) <= input.now.getTime();
+  const token = await resolveStoredToken({
+    homeDir: input.homeDir,
+    credentialStore: input.credentialStore,
+    profile,
+    tokenKind,
+    expired,
+    oauthRefresher: input.oauthRefresher
   });
-  if (token === void 0) {
-    throw new Error("Stored Sift credential store secret is missing; run `sift login` again.");
-  }
   return {
     source: "stored",
+    tokenKind,
     token,
     config: {
       apiBaseUrl: profile.apiBaseUrl,
@@ -3191,6 +3570,63 @@ async function loadCliAuthConfig(input) {
       capabilities: [...profile.capabilities]
     }
   };
+}
+async function resolveStoredToken(input) {
+  const { profile } = input;
+  if (input.expired && input.tokenKind === "oauth" && profile.refreshable === true && input.oauthRefresher !== void 0) {
+    return refreshOAuthToken({
+      homeDir: input.homeDir,
+      credentialStore: input.credentialStore,
+      profile,
+      oauthRefresher: input.oauthRefresher
+    });
+  }
+  if (input.expired) {
+    throw new Error("Stored Sift CLI auth has expired; run `sift login` again.");
+  }
+  const token = await input.credentialStore.read({
+    apiBaseUrl: profile.apiBaseUrl,
+    tokenId: profile.tokenId
+  });
+  if (token === void 0) {
+    throw new Error("Stored Sift credential store secret is missing; run `sift login` again.");
+  }
+  return token;
+}
+async function refreshOAuthToken(input) {
+  const { profile } = input;
+  const refreshToken = await input.credentialStore.read({
+    apiBaseUrl: profile.apiBaseUrl,
+    tokenId: refreshSlotTokenId(profile.tokenId)
+  });
+  if (refreshToken === void 0) {
+    throw new Error("Stored Sift OAuth refresh token is missing; run `sift login` again.");
+  }
+  const refreshed = await input.oauthRefresher({
+    apiBaseUrl: profile.apiBaseUrl,
+    refreshToken
+  });
+  await input.credentialStore.write({
+    apiBaseUrl: profile.apiBaseUrl,
+    tokenId: profile.tokenId,
+    secret: refreshed.accessToken
+  });
+  if (refreshed.refreshToken !== void 0) {
+    await input.credentialStore.write({
+      apiBaseUrl: profile.apiBaseUrl,
+      tokenId: refreshSlotTokenId(profile.tokenId),
+      secret: refreshed.refreshToken
+    });
+  }
+  const updated = {
+    ...profile,
+    tokenExpiresAt: refreshed.expiresAt ?? profile.tokenExpiresAt
+  };
+  await writeStoredSiftConfig({
+    homeDir: input.homeDir,
+    config: { currentProfile: "default", profiles: { default: updated } }
+  });
+  return refreshed.accessToken;
 }
 function loadEnvAuth(env, token) {
   return {
@@ -3222,10 +3658,10 @@ function parseStoredSiftConfig(value) {
 }
 function parseStoredSiftProfile(value) {
   const record = objectValue(value, "profile");
-  if ("token" in record || "secret" in record || "tokenSecret" in record) {
+  if ("token" in record || "secret" in record || "tokenSecret" in record || "accessToken" in record || "refreshToken" in record) {
     throw new Error("Stored Sift config must not contain token secrets.");
   }
-  return {
+  const profile = {
     apiBaseUrl: stringValue(record.apiBaseUrl, "apiBaseUrl").replace(/\/+$/u, ""),
     appBaseUrl: stringValue(record.appBaseUrl, "appBaseUrl").replace(/\/+$/u, ""),
     workspaceId: stringValue(record.workspaceId, "workspaceId"),
@@ -3236,6 +3672,21 @@ function parseStoredSiftProfile(value) {
     tokenExpiresAt: stringValue(record.tokenExpiresAt, "tokenExpiresAt"),
     capabilities: stringArray(record.capabilities, "capabilities")
   };
+  const tokenKind = tokenKindValue(record.tokenKind);
+  if (tokenKind !== void 0) {
+    profile.tokenKind = tokenKind;
+  }
+  if (record.refreshable === true) {
+    profile.refreshable = true;
+  }
+  return profile;
+}
+function tokenKindValue(value) {
+  if (value === void 0) return void 0;
+  if (value === "legacy" || value === "oauth" || value === "service") {
+    return value;
+  }
+  throw new Error("tokenKind must be one of legacy, oauth, service.");
 }
 function requiredEnv(env, name) {
   const value = clean(env[name]);
@@ -3369,21 +3820,115 @@ function isExecError(error) {
 
 // src/auth/loginFlow.ts
 import { execFile as execFile2 } from "child_process";
-import { hostname } from "os";
+import { hostname as hostname3 } from "os";
 import { promisify as promisify2 } from "util";
+
+// src/auth/loginHelpers.ts
+async function resolveLoginApiBaseUrl(input) {
+  const options = parseOptions(input.argv);
+  const fromFlag = clean2(options.get("api-base-url"));
+  if (fromFlag !== void 0) return normalizeUrl(fromFlag);
+  const fromEnv = clean2(input.env.SIFT_API_BASE_URL);
+  if (fromEnv !== void 0) return normalizeUrl(fromEnv);
+  const stored = await readStoredSiftConfig({ homeDir: input.homeDir });
+  const profile = stored?.profiles[stored.currentProfile];
+  if (profile !== void 0) return normalizeUrl(profile.apiBaseUrl);
+  return "https://api.sift.com";
+}
+function requestedCapabilities(rest) {
+  const option = parseOptions(rest).get("capability");
+  return option === void 0 ? ["record:read"] : option.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
+}
+function errorMessage2(parsed, status2) {
+  if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+    const error = parsed.error;
+    if (typeof error === "object" && error !== null && "message" in error) {
+      const message = error.message;
+      if (typeof message === "string") return message;
+    }
+  }
+  return `CLI auth request failed with status ${status2}.`;
+}
+function normalizeUrl(value) {
+  return value.replace(/\/+$/u, "");
+}
+function clean2(value) {
+  const trimmed = value?.trim();
+  return trimmed === void 0 || trimmed.length === 0 ? void 0 : trimmed;
+}
+
+// src/auth/oauthConfig.ts
+var TRUE_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
+function oauthLoginSelected(input) {
+  if (input.argv.includes("--no-oauth")) return false;
+  if (input.argv.includes("--oauth")) return true;
+  const fromEnv = input.env.SIFT_OAUTH?.trim().toLowerCase();
+  return fromEnv !== void 0 && TRUE_VALUES.has(fromEnv);
+}
+function resolveCliOAuthConfig(input) {
+  const options = parseOptions(input.argv);
+  const authorizeUrl = clean3(options.get("oauth-authorize-url")) ?? clean3(input.env.SIFT_OAUTH_AUTHORIZE_URL);
+  const tokenUrl = clean3(options.get("oauth-token-url")) ?? clean3(input.env.SIFT_OAUTH_TOKEN_URL);
+  const clientId = clean3(options.get("oauth-client-id")) ?? clean3(input.env.SIFT_OAUTH_CLIENT_ID);
+  if (authorizeUrl === void 0 || tokenUrl === void 0 || clientId === void 0) {
+    return void 0;
+  }
+  const registrationUrl = clean3(options.get("oauth-registration-url")) ?? clean3(input.env.SIFT_OAUTH_REGISTRATION_URL);
+  const config2 = { authorizeUrl, tokenUrl, clientId };
+  if (registrationUrl !== void 0) {
+    config2.registrationUrl = registrationUrl;
+  }
+  const scopes = parseScopeList(clean3(options.get("oauth-scopes")) ?? clean3(input.env.SIFT_OAUTH_SCOPES));
+  if (scopes.length > 0) {
+    config2.defaultScopes = scopes;
+  }
+  return config2;
+}
+function scopesForCapabilities(capabilities) {
+  const scopes = /* @__PURE__ */ new Set(["read"]);
+  for (const capability of capabilities) {
+    if (capability.endsWith(":write")) {
+      scopes.add("write");
+    }
+  }
+  return [...scopes];
+}
+function parseScopeList(value) {
+  if (value === void 0) return [];
+  return value.split(/[\s,]+/u).map((item) => item.trim()).filter((item) => item.length > 0);
+}
+function clean3(value) {
+  const trimmed = value?.trim();
+  return trimmed === void 0 || trimmed.length === 0 ? void 0 : trimmed;
+}
+
+// src/auth/oauthLoginFlow.ts
+import { hostname } from "os";
 
 // src/auth/localCallback.ts
 import { createServer } from "http";
 async function createLocalCallbackServer() {
   let resolveCallback;
   let rejectCallback;
-  const callbackPromise = new Promise((resolve, reject) => {
-    resolveCallback = resolve;
+  const callbackPromise = new Promise((resolve2, reject) => {
+    resolveCallback = resolve2;
     rejectCallback = reject;
   });
   const server = createServer((request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const error = url.searchParams.get("error");
+      if (error !== null) {
+        const description = url.searchParams.get("error_description");
+        response.writeHead(400, { "Content-Type": "text/plain" });
+        response.end("Sift CLI authorization failed. You can return to the terminal.");
+        rejectCallback?.(
+          new Error(
+            description === null || description.trim().length === 0 ? `Authorization failed: ${error}.` : `Authorization failed: ${error}: ${description}`
+          )
+        );
+        return;
+      }
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       if (code === null || state === null) {
@@ -3411,21 +3956,21 @@ async function createLocalCallbackServer() {
   };
 }
 function listen(server) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       server.off("error", reject);
-      resolve();
+      resolve2();
     });
   });
 }
 function closeServer(server) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     server.close((error) => {
       if (error) {
         reject(error);
       } else {
-        resolve();
+        resolve2();
       }
     });
   });
@@ -3451,15 +3996,445 @@ function sha256Base64Url(value) {
   return createHash2("sha256").update(value).digest("base64url");
 }
 
+// src/auth/oauthLoginFlow.ts
+async function oauthBrowserLogin(input) {
+  await input.credentialStore.assertAvailable();
+  const callbackServer = await (input.createCallbackServer ?? createLocalCallbackServer)();
+  try {
+    const pkce = createPkceState({ nextSecret: input.nextSecret });
+    const scopes = mergeScopes(scopesForCapabilities(input.capabilities), input.oauth.defaultScopes);
+    const authorizeUrl = buildAuthorizeUrl({
+      oauth: input.oauth,
+      redirectUri: callbackServer.redirectUri,
+      codeChallenge: pkce.codeChallenge,
+      state: pkce.state,
+      scopes
+    });
+    await tryOpenBrowser(input.openBrowser, authorizeUrl);
+    const callback = await callbackServer.waitForCallback();
+    if (callback.state !== pkce.state) {
+      throw new Error("OAuth callback state mismatch.");
+    }
+    const tokens = await exchangeAuthorizationCode({
+      oauth: input.oauth,
+      fetch: input.fetch,
+      code: callback.code,
+      codeVerifier: pkce.codeVerifier,
+      redirectUri: callbackServer.redirectUri
+    });
+    return finalizeOAuthLogin(input, tokens);
+  } finally {
+    await callbackServer.close();
+  }
+}
+async function oauthRefresh(input) {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: input.refreshToken,
+    client_id: input.oauth.clientId
+  });
+  const tokens = await postForm(input.fetch, input.oauth.tokenUrl, body);
+  return toTokenSet(tokens);
+}
+async function finalizeOAuthLogin(input, tokens) {
+  const scope = await input.resolveScope({
+    apiBaseUrl: input.apiBaseUrl,
+    token: tokens.accessToken,
+    fetch: input.fetch
+  });
+  const profile = {
+    apiBaseUrl: input.apiBaseUrl,
+    appBaseUrl: input.appBaseUrl,
+    workspaceId: scope.workspaceId,
+    brainId: scope.brainId,
+    principalId: scope.principalId,
+    // Synthetic, non-secret slot id so the converged token reuses the same
+    // keychain account scheme (apiBaseUrl|tokenId) as the legacy flow.
+    tokenId: "oauth",
+    tokenLabel: tokens.tokenLabel,
+    tokenExpiresAt: tokens.expiresAt ?? farFuture(),
+    capabilities: scope.capabilities,
+    tokenKind: "oauth",
+    refreshable: tokens.refreshToken !== void 0
+  };
+  const result2 = { profile, accessToken: tokens.accessToken };
+  if (tokens.refreshToken !== void 0) {
+    result2.refreshToken = tokens.refreshToken;
+  }
+  return result2;
+}
+function buildAuthorizeUrl(input) {
+  const url = new URL(input.oauth.authorizeUrl);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", input.oauth.clientId);
+  url.searchParams.set("redirect_uri", input.redirectUri);
+  url.searchParams.set("code_challenge", input.codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("state", input.state);
+  if (input.scopes.length > 0) {
+    url.searchParams.set("scope", input.scopes.join(" "));
+  }
+  return url.toString();
+}
+async function exchangeAuthorizationCode(input) {
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: input.code,
+    redirect_uri: input.redirectUri,
+    client_id: input.oauth.clientId,
+    code_verifier: input.codeVerifier
+  });
+  const tokens = await postForm(input.fetch, input.oauth.tokenUrl, body);
+  return toTokenSet(tokens);
+}
+async function postForm(fetchImpl, url, body) {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json"
+    },
+    body: body.toString()
+  });
+  const text = await response.text();
+  const parsed = text.length === 0 ? {} : JSON.parse(text);
+  if (!response.ok) {
+    throw new Error(oauthTokenError(parsed, response.status));
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("OAuth token endpoint returned a non-object response.");
+  }
+  return parsed;
+}
+function toTokenSet(tokens) {
+  const accessToken = tokens.access_token;
+  if (typeof accessToken !== "string" || accessToken.trim().length === 0) {
+    throw new Error("OAuth token endpoint did not return an access token.");
+  }
+  const set = { accessToken, tokenLabel: oauthTokenLabel() };
+  const refreshToken = tokens.refresh_token;
+  if (typeof refreshToken === "string" && refreshToken.trim().length > 0) {
+    set.refreshToken = refreshToken;
+  }
+  const expiresAt = expiresAtFrom(tokens.expires_in);
+  if (expiresAt !== void 0) {
+    set.expiresAt = expiresAt;
+  }
+  return set;
+}
+function expiresAtFrom(expiresIn) {
+  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+    return void 0;
+  }
+  return new Date(Date.now() + expiresIn * 1e3).toISOString();
+}
+function mergeScopes(derived, defaults) {
+  const merged = new Set(derived);
+  for (const scope of defaults ?? []) {
+    merged.add(scope);
+  }
+  return [...merged];
+}
+function oauthTokenLabel() {
+  const name = hostname().trim();
+  return name.length === 0 ? "oauth" : `oauth-${name}`;
+}
+function farFuture() {
+  return new Date(Date.now() + 365 * 24 * 60 * 60 * 1e3).toISOString();
+}
+async function tryOpenBrowser(openBrowser, url) {
+  if (openBrowser === void 0) return;
+  await openBrowser(url).catch(() => void 0);
+}
+function oauthTokenError(parsed, status2) {
+  if (typeof parsed === "object" && parsed !== null) {
+    const record = parsed;
+    const error = typeof record.error === "string" ? record.error : void 0;
+    const description = typeof record.error_description === "string" ? record.error_description : void 0;
+    if (error !== void 0) {
+      return description === void 0 ? `OAuth token request failed: ${error}.` : `OAuth token request failed: ${error}: ${description}`;
+    }
+  }
+  return `OAuth token request failed with status ${status2}.`;
+}
+
+// src/auth/serviceTokenLogin.ts
+import { hostname as hostname2 } from "os";
+async function serviceTokenLogin(input) {
+  await input.credentialStore.assertAvailable();
+  const callerBearer = await input.resolveCallerBearer();
+  if (callerBearer === void 0) {
+    throw new Error(
+      "Headless login needs an authenticated caller. Set SIFT_API_TOKEN or run 'sift login' once interactively, then retry 'sift login --no-browser'."
+    );
+  }
+  const options = parseOptions(input.rest);
+  const requestBody = buildServiceTokenRequest({
+    rest: input.rest,
+    capabilities: input.capabilities,
+    label: options.get("label"),
+    workspaceId: options.get("workspace-id"),
+    ttlDays: options.get("ttl-days")
+  });
+  const minted = await postServiceTokenMint(
+    input.fetch,
+    `${input.apiBaseUrl}/cli-auth/service-token`,
+    callerBearer,
+    requestBody
+  );
+  const profile = {
+    apiBaseUrl: input.apiBaseUrl,
+    appBaseUrl: input.appBaseUrl,
+    workspaceId: minted.workspaceId,
+    brainId: minted.brainId,
+    principalId: minted.principalId,
+    tokenId: minted.tokenId,
+    tokenLabel: minted.tokenLabel,
+    tokenExpiresAt: minted.tokenExpiresAt,
+    capabilities: minted.capabilities,
+    tokenKind: "service"
+  };
+  return { profile, token: minted.token };
+}
+function buildServiceTokenRequest(input) {
+  const body = {
+    label: clean4(input.label) ?? defaultLabel()
+  };
+  const workspaceId = clean4(input.workspaceId);
+  if (workspaceId !== void 0) {
+    body.workspaceId = workspaceId;
+  }
+  if (capabilityFlagPresent(input.rest)) {
+    body.capabilities = input.capabilities;
+  }
+  const ttlDays = clean4(input.ttlDays);
+  if (ttlDays !== void 0) {
+    const parsed = Number(ttlDays);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error("Option --ttl-days must be a positive integer.");
+    }
+    body.ttlDays = parsed;
+  }
+  return body;
+}
+function capabilityFlagPresent(rest) {
+  return rest.includes("--capability");
+}
+async function postServiceTokenMint(fetchImpl, url, callerBearer, body) {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${callerBearer}`
+    },
+    body: JSON.stringify(body)
+  });
+  const text = await response.text();
+  const parsed = text.length === 0 ? {} : JSON.parse(text);
+  if (!response.ok) {
+    throw new Error(serviceTokenError(parsed, response.status));
+  }
+  return assertServiceTokenResponse(parsed);
+}
+function assertServiceTokenResponse(parsed) {
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Service-token mint returned a non-object response.");
+  }
+  const record = parsed;
+  return {
+    token: requiredString(record.token, "token"),
+    tokenId: requiredString(record.tokenId, "tokenId"),
+    tokenLabel: requiredString(record.tokenLabel, "tokenLabel"),
+    tokenExpiresAt: requiredString(record.tokenExpiresAt, "tokenExpiresAt"),
+    workspaceId: requiredString(record.workspaceId, "workspaceId"),
+    brainId: requiredString(record.brainId, "brainId"),
+    principalId: requiredString(record.principalId, "principalId"),
+    capabilities: stringArray2(record.capabilities, "capabilities")
+  };
+}
+function requiredString(value, name) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Service-token mint response missing ${name}.`);
+  }
+  return value;
+}
+function stringArray2(value, name) {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(`Service-token mint response field ${name} must be a string array.`);
+  }
+  return [...value];
+}
+function serviceTokenError(parsed, status2) {
+  if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+    const error = parsed.error;
+    if (typeof error === "object" && error !== null && "message" in error) {
+      const message = error.message;
+      if (typeof message === "string" && message.trim().length > 0) {
+        return message;
+      }
+    }
+  }
+  return `Service-token mint failed with status ${status2}.`;
+}
+function defaultLabel() {
+  const name = hostname2().trim();
+  return name.length === 0 ? "sift-cli-service" : `sift-cli-service-${name}`;
+}
+function clean4(value) {
+  const trimmed = value?.trim();
+  return trimmed === void 0 || trimmed.length === 0 ? void 0 : trimmed;
+}
+
+// src/auth/convergedLogin.ts
+function oauthRefresherFor(input, rest) {
+  const oauth = input.oauthConfig ?? resolveCliOAuthConfig({ argv: rest, env: input.env });
+  if (oauth === void 0) return void 0;
+  return ({ refreshToken }) => oauthRefresh({ oauth, fetch: input.fetch, refreshToken });
+}
+async function oauthBrowserLoginFlow(input, rest, json) {
+  const apiBaseUrl = await resolveLoginApiBaseUrl({ argv: rest, env: input.env, homeDir: input.homeDir });
+  const oauth = resolveOAuthConfigOrThrow(input, rest);
+  const result2 = await oauthBrowserLogin({
+    apiBaseUrl,
+    appBaseUrl: resolveAppBaseUrl(input.env, apiBaseUrl),
+    oauth,
+    capabilities: requestedCapabilities(rest),
+    fetch: input.fetch,
+    credentialStore: input.credentialStore,
+    ...input.openBrowser === void 0 ? {} : { openBrowser: input.openBrowser },
+    ...input.createCallbackServer === void 0 ? {} : { createCallbackServer: input.createCallbackServer },
+    resolveScope: input.resolveScope ?? whoamiResolveScope,
+    ...input.nextSecret === void 0 ? {} : { nextSecret: input.nextSecret }
+  });
+  return persistConvergedLogin(
+    input,
+    {
+      profile: result2.profile,
+      accessToken: result2.accessToken,
+      ...result2.refreshToken === void 0 ? {} : { refreshToken: result2.refreshToken }
+    },
+    json
+  );
+}
+async function serviceTokenLoginFlow(input, rest, json) {
+  const apiBaseUrl = await resolveLoginApiBaseUrl({ argv: rest, env: input.env, homeDir: input.homeDir });
+  const result2 = await serviceTokenLogin({
+    apiBaseUrl,
+    appBaseUrl: resolveAppBaseUrl(input.env, apiBaseUrl),
+    rest,
+    capabilities: requestedCapabilities(rest),
+    fetch: input.fetch,
+    credentialStore: input.credentialStore,
+    resolveCallerBearer: defaultCallerBearerResolver(input)
+  });
+  return persistConvergedLogin(input, { profile: result2.profile, accessToken: result2.token }, json);
+}
+function resolveOAuthConfigOrThrow(input, rest) {
+  const oauth = input.oauthConfig ?? resolveCliOAuthConfig({ argv: rest, env: input.env });
+  if (oauth === void 0) {
+    throw new Error(
+      "OAuth login is not yet enabled. Set SIFT_OAUTH_AUTHORIZE_URL, SIFT_OAUTH_TOKEN_URL, and SIFT_OAUTH_CLIENT_ID, or omit --oauth to use the default sign-in."
+    );
+  }
+  return oauth;
+}
+function defaultCallerBearerResolver(input) {
+  return async () => {
+    const envToken = clean2(input.env.SIFT_API_TOKEN);
+    if (envToken !== void 0) return envToken;
+    const stored = await readStoredSiftConfig({ homeDir: input.homeDir });
+    const profile = stored?.profiles[stored.currentProfile];
+    if (profile === void 0) return void 0;
+    return input.credentialStore.read({
+      apiBaseUrl: profile.apiBaseUrl,
+      tokenId: profile.tokenId
+    });
+  };
+}
+var whoamiResolveScope = async ({ apiBaseUrl, token, fetch: fetchImpl }) => {
+  const response = await fetchImpl(`${apiBaseUrl}/agent-tools/whoami`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ input: {} })
+  });
+  const text = await response.text();
+  const parsed = text.length === 0 ? {} : JSON.parse(text);
+  if (!response.ok) {
+    throw new Error(errorMessage2(parsed, response.status));
+  }
+  return whoamiScopeFrom(parsed);
+};
+function whoamiScopeFrom(parsed) {
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("whoami returned a non-object response.");
+  }
+  const record = parsed;
+  const principalId = nestedString(record.principal, "id");
+  const workspaceId = nestedString(record.scope, "workspaceId");
+  const brainId = nestedString(record.scope, "brainId");
+  if (principalId === void 0 || workspaceId === void 0 || brainId === void 0) {
+    throw new Error("whoami response is missing principal or scope fields.");
+  }
+  const capabilities = Array.isArray(record.capabilities) ? record.capabilities.filter((item) => typeof item === "string") : [];
+  return { principalId, workspaceId, brainId, capabilities };
+}
+function nestedString(parent, key) {
+  if (typeof parent !== "object" || parent === null) return void 0;
+  const value = parent[key];
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function resolveAppBaseUrl(env, apiBaseUrl) {
+  const fromEnv = clean2(env.SIFT_APP_BASE_URL);
+  if (fromEnv !== void 0) return normalizeUrl(fromEnv);
+  return apiBaseUrl.replace(/\/\/api\./u, "//");
+}
+async function persistConvergedLogin(input, result2, json) {
+  const { profile } = result2;
+  try {
+    await input.credentialStore.write({
+      apiBaseUrl: profile.apiBaseUrl,
+      tokenId: profile.tokenId,
+      secret: result2.accessToken
+    });
+    if (result2.refreshToken !== void 0) {
+      await input.credentialStore.write({
+        apiBaseUrl: profile.apiBaseUrl,
+        tokenId: refreshSlotTokenId(profile.tokenId),
+        secret: result2.refreshToken
+      });
+    }
+  } catch (error) {
+    return fail(
+      `Sift CLI login storage failure: ${error instanceof Error ? error.message : "credential store write failed"}`
+    );
+  }
+  await writeStoredSiftConfig({
+    homeDir: input.homeDir,
+    config: { currentProfile: "default", profiles: { default: profile } }
+  });
+  const scope = {
+    apiBaseUrl: profile.apiBaseUrl,
+    tokenLabel: profile.tokenLabel,
+    tokenExpiresAt: profile.tokenExpiresAt,
+    principalId: profile.principalId,
+    workspaceId: profile.workspaceId,
+    brainId: profile.brainId,
+    capabilities: profile.capabilities
+  };
+  return ok(json ? `${JSON.stringify(scope)}
+` : `Authenticated Sift CLI
+${renderScope(scope)}`);
+}
+
 // src/auth/loginFlow.ts
 var execFileAsync2 = promisify2(execFile2);
 function createSiftCliAuthCommands(input) {
   const now = input.now ?? (() => /* @__PURE__ */ new Date());
-  const sleep = input.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = input.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
   return {
     async login({ rest, json }) {
       try {
-        return rest.includes("--no-browser") ? await deviceLogin(input, rest, sleep, json) : await browserLogin(input, rest, json);
+        return await routeLogin(input, rest, sleep, json);
       } catch (error) {
         return json ? failJson(error instanceof Error ? error.message : "Login failed.") : fail(error instanceof Error ? error.message : "Login failed.");
       }
@@ -3475,21 +4450,18 @@ function createSiftCliAuthCommands(input) {
         env: input.env,
         homeDir: input.homeDir,
         credentialStore: input.credentialStore,
-        now: now()
+        now: now(),
+        oauthRefresher: oauthRefresherFor(input, [])
       });
     }
   };
 }
-async function resolveLoginApiBaseUrl(input) {
-  const options = parseOptions(input.argv);
-  const fromFlag = clean2(options.get("api-base-url"));
-  if (fromFlag !== void 0) return normalizeUrl(fromFlag);
-  const fromEnv = clean2(input.env.SIFT_API_BASE_URL);
-  if (fromEnv !== void 0) return normalizeUrl(fromEnv);
-  const stored = await readStoredSiftConfig({ homeDir: input.homeDir });
-  const profile = stored?.profiles[stored.currentProfile];
-  if (profile !== void 0) return normalizeUrl(profile.apiBaseUrl);
-  return "https://api.sift.com";
+async function routeLogin(input, rest, sleep, json) {
+  const noBrowser = rest.includes("--no-browser");
+  if (oauthLoginSelected({ argv: rest, env: input.env })) {
+    return noBrowser ? serviceTokenLoginFlow(input, rest, json) : oauthBrowserLoginFlow(input, rest, json);
+  }
+  return noBrowser ? deviceLogin(input, rest, sleep, json) : browserLogin(input, rest, json);
 }
 async function browserLogin(input, rest, json) {
   await input.credentialStore.assertAvailable();
@@ -3503,10 +4475,10 @@ async function browserLogin(input, rest, json) {
       codeChallenge: pkce.codeChallenge,
       codeChallengeMethod: "S256",
       stateHash: pkce.stateHash,
-      deviceLabel: input.deviceLabel ?? hostname(),
+      deviceLabel: input.deviceLabel ?? hostname3(),
       requestedCapabilities: requestedCapabilities(rest)
     });
-    await tryOpenBrowser(input.openBrowser, request.authorizeUrl);
+    await tryOpenBrowser2(input.openBrowser, request.authorizeUrl);
     const callback = await callbackServer.waitForCallback();
     if (callback.state !== pkce.stateHash) {
       throw new Error("CLI auth callback state mismatch.");
@@ -3526,7 +4498,7 @@ async function deviceLogin(input, rest, sleep, json) {
   await input.credentialStore.assertAvailable();
   const apiBaseUrl = await resolveLoginApiBaseUrl({ argv: rest, env: input.env, homeDir: input.homeDir });
   const request = await postJson(input.fetch, `${apiBaseUrl}/cli-auth/device`, {
-    deviceLabel: input.deviceLabel ?? hostname(),
+    deviceLabel: input.deviceLabel ?? hostname3(),
     requestedCapabilities: requestedCapabilities(rest)
   });
   let intervalSeconds = request.intervalSeconds;
@@ -3652,10 +4624,6 @@ function okStatus(source, loaded, json) {
 ${renderScope(loaded.config)}`
   );
 }
-function requestedCapabilities(rest) {
-  const option = parseOptions(rest).get("capability");
-  return option === void 0 ? ["record:read"] : option.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
-}
 function configFromToken(token) {
   return {
     currentProfile: "default",
@@ -3674,7 +4642,7 @@ function configFromToken(token) {
     }
   };
 }
-async function tryOpenBrowser(openBrowser, url) {
+async function tryOpenBrowser2(openBrowser, url) {
   await (openBrowser ?? openBrowserUrl)(url).catch(() => void 0);
 }
 async function openBrowserUrl(url) {
@@ -3704,16 +4672,6 @@ async function postJson(fetchImpl, url, body, headers = {}) {
   }
   return parsed;
 }
-function errorMessage2(parsed, status2) {
-  if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
-    const error = parsed.error;
-    if (typeof error === "object" && error !== null && "message" in error) {
-      const message = error.message;
-      if (typeof message === "string") return message;
-    }
-  }
-  return `CLI auth request failed with status ${status2}.`;
-}
 function failJson(message) {
   return {
     exitCode: 1,
@@ -3721,13 +4679,6 @@ function failJson(message) {
 `,
     stderr: ""
   };
-}
-function normalizeUrl(value) {
-  return value.replace(/\/+$/u, "");
-}
-function clean2(value) {
-  const trimmed = value?.trim();
-  return trimmed === void 0 || trimmed.length === 0 ? void 0 : trimmed;
 }
 
 // src/bin/sift.ts
@@ -3764,7 +4715,9 @@ var result = await runSiftCli({
   mcpServer: {
     serve: async ({ config: config2, executor }) => {
       if (executor === void 0) {
-        throw new Error("No Sift API executor is configured for mcp.serve.");
+        throw new Error(
+          "Not signed in. Run 'sift login' to authenticate, then 'sift mcp serve' to start the local MCP server."
+        );
       }
       const { createLocalMcpStdioServer: createLocalMcpStdioServer2 } = await Promise.resolve().then(() => (init_dist(), dist_exports));
       return createLocalMcpStdioServer2({
