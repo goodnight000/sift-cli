@@ -2348,6 +2348,17 @@ function validateCommandCapability(input) {
   }
 }
 
+// src/commandErrors.ts
+var ROAM_IMPORT_SCOPE_FIX = "Roam import needs additional Sift access. Run 'npx -y @sift-wiki/cli@latest login --capability record:read,source:manage', then retry 'sift roam import'.";
+function toCommandError(error, commandKey) {
+  if (commandKey === "roam:import" && error instanceof Error && error.message === "missing capability source:manage") {
+    const permissionError = new Error(ROAM_IMPORT_SCOPE_FIX);
+    permissionError.name = "RuntimePermissionDeniedError";
+    return permissionError;
+  }
+  return error;
+}
+
 // src/contractOption.ts
 function extractContractVersion(argv2) {
   const index = argv2.indexOf("--contract");
@@ -3443,7 +3454,7 @@ async function runSiftCli(rawInput) {
     validateCommandCapability({ commandKey, config: input.config });
     return await handler();
   } catch (error) {
-    return errorResult(error, json);
+    return errorResult(toCommandError(error, commandKey), json);
   }
 }
 async function searchQuery(executor, rest, json) {
@@ -5214,6 +5225,11 @@ function handleJsonRpcLine(line, pending) {
   entry.resolve(parsed.result);
 }
 
+// src/startupAuthMessage.ts
+function formatMissingStartupAuthMessage(_args) {
+  return "Not signed in. Run 'npx -y @sift-wiki/cli@latest login', then retry this command.";
+}
+
 // src/bin/sift.ts
 var credentialStore = createMacOSKeychainStore();
 var authCommands = createSiftCliAuthCommands({
@@ -5284,7 +5300,7 @@ async function loadAuthForStartup(commands, args) {
   try {
     const loadedAuth = await commands.loadAuth();
     if (loadedAuth === void 0 && !canRunWithoutLoadedAuth(args)) {
-      return { ok: false, message: missingAuthMessage(args) };
+      return { ok: false, message: formatMissingStartupAuthMessage(args) };
     }
     return { ok: true, loadedAuth };
   } catch (error) {
@@ -5296,12 +5312,6 @@ async function loadAuthForStartup(commands, args) {
       message: error instanceof Error ? error.message : "Failed to load Sift CLI auth."
     };
   }
-}
-function missingAuthMessage(args) {
-  const commandArgs = args.filter((arg) => arg !== "--json");
-  const [group, command] = commandArgs;
-  const capability = group === "roam" && command === "import" ? " --capability record:read,source:manage" : "";
-  return `Not signed in. Run 'npx -y @sift-wiki/cli@latest login --api-base-url ${DEFAULT_SIFT_API_BASE_URL}${capability}', then retry this command.`;
 }
 function canRunWithoutLoadedAuth(args) {
   const commandArgs = args.filter((arg) => arg !== "--json");
