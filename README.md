@@ -47,5 +47,26 @@ sift ask "what changed this week?"
 The CLI is a hosted thin client. `sift login` is the normal setup path and opens
 the existing browser login flow.
 
+## Roam Research import
+
+Open the graph in Roam Desktop, then approve read-only local access:
+
+```bash
+npx -y @roam-research/roam-mcp connect --access-level read-only
+```
+
+Import only pages marked `[[Sift]]` in Roam:
+
+```bash
+sift roam import --scope sift-tag
+```
+
+Import the whole graph only when you intentionally want Sift to read every
+readable page:
+
+```bash
+sift roam import --scope whole-graph --confirm-whole-graph
+```
+
 For repo-local install details, troubleshooting, and advanced CI/headless
 env-token auth, see `docs/cli/install.md`.

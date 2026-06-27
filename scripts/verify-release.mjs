@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,7 +12,7 @@ const binPath = join(root, "dist/bin/sift.js");
 const bin = await readFile(binPath, "utf8");
 
 assert.equal(pkg.name, "@sift-wiki/cli");
-assert.equal(pkg.version, "0.1.4");
+assert.equal(pkg.version, "0.1.5");
 assert.equal(pkg.bin?.sift, "dist/bin/sift.js");
 assert.deepEqual(pkg.files, ["dist/bin", "README.md"]);
 assert.equal(pkg.repository?.url, "git+https://github.com/goodnight000/sift-cli.git");
@@ -32,7 +32,14 @@ for (const pattern of [
 
 const workdir = await mkdtemp(join(tmpdir(), "sift-cli-release-"));
 try {
-  const npmEnv = { ...process.env, npm_config_cache: join(workdir, "npm-cache") };
+  const home = join(workdir, "home");
+  await mkdir(home, { recursive: true });
+  const npmEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    npm_config_cache: join(workdir, "npm-cache"),
+  };
   const pack = await run("npm", ["pack", "--json", "--pack-destination", workdir], {
     cwd: root,
     env: npmEnv,
@@ -47,7 +54,7 @@ try {
   await run("npm", ["install", "--prefix", prefix, "-g", tarball], { env: npmEnv });
 
   const installedBin = join(prefix, "bin/sift");
-  const status = await run(installedBin, ["auth", "status", "--json"]);
+  const status = await run(installedBin, ["auth", "status", "--json"], { env: npmEnv });
   assert.deepEqual(JSON.parse(status.stdout), { auth: "none" });
 
   const fakeApi = await startFakeApi();

@@ -1,6 +1,6 @@
 {
   "name": "@sift-wiki/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "license": "UNLICENSED",
   "description": "Sift CLI release artifact.",

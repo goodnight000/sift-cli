@@ -149,20 +149,20 @@ function parseProfileQuery(input) {
   };
 }
 function parseToolsSearch(input) {
-  const result2 = {
+  const result = {
     intent: requireString(input, "intent")
   };
   if (input.toolsetNames !== void 0) {
-    result2.toolsetNames = requireStringArray(input, "toolsetNames");
+    result.toolsetNames = requireStringArray(input, "toolsetNames");
   }
   if (input.limit !== void 0) {
     const limit = optionalInteger(input, "limit");
     if (limit === void 0 || limit < 1 || limit > 20) {
       throw new Error("limit must be an integer between 1 and 20.");
     }
-    result2.limit = limit;
+    result.limit = limit;
   }
-  return result2;
+  return result;
 }
 function parseDecision(input) {
   return {
@@ -373,6 +373,7 @@ function writeTool(name, summary, properties, cliExample, options) {
     capability: "record:write",
     mutability: "write",
     transports: writeTransports,
+    idempotency: options?.idempotency,
     cliExample,
     hostedAgent: options?.hostedAgent
   });
@@ -428,7 +429,7 @@ function defineTool(input) {
     mutability: input.mutability,
     auditCategory: input.mutability === "admin" ? "admin" : input.mutability,
     transports: input.transports,
-    idempotency: input.mutability === "write" ? "recommended" : "none",
+    idempotency: input.idempotency ?? (input.mutability === "write" ? "recommended" : "none"),
     resultSize: "compact",
     cliExample: input.cliExample,
     hostedAgent: hostedAgentMetadata(input, required)
@@ -610,6 +611,32 @@ var init_registry = __esm({
         severity: { type: "string" },
         visibility: { type: "array", items: { type: "string" } }
       }, "sift skill teach <skill-id> --lesson 'when X, do Y'", { required: ["skillId", "lesson", "visibility"] }),
+      writeTool("skill.feedback", "Report structured feedback for a pinned skill version; external-agent reports remain reported until trusted Sift evidence verifies them.", {
+        skillId: { type: "string" },
+        skillVersionId: { type: "string" },
+        exerciseRef: {
+          type: "object",
+          properties: { exerciseId: { type: "string" } },
+          required: ["exerciseId"]
+        },
+        subjectRef: { type: "object", properties: {} },
+        signalKind: { type: "string" },
+        polarity: { type: "string", enum: ["positive", "negative", "mixed", "unknown"] },
+        strength: { type: "string", enum: ["weak", "medium", "strong"] },
+        payload: { type: "object", properties: {} },
+        idempotencyKey: { type: "string" }
+      }, "sift skill feedback <skill-id> <skill-version-id>", {
+        required: [
+          "skillId",
+          "skillVersionId",
+          "signalKind",
+          "polarity",
+          "strength",
+          "payload",
+          "idempotencyKey"
+        ],
+        idempotency: "required"
+      }),
       readTool("search.query", "Search authorized brain context and return raw cited candidate results for exploration.", {
         query: { type: "string" },
         limit: { type: "integer", minimum: 1, maximum: 20 }
@@ -813,24 +840,24 @@ var init_discovery = __esm({
 });
 
 // ../tools/dist/results.js
-function captureResult(result2) {
+function captureResult(result) {
   return {
-    status: result2.job?.status ?? result2.status ?? "captured",
-    jobId: result2.job?.id,
-    sourceId: result2.sourceId,
-    sourceItemId: result2.sourceItemId,
-    recordId: result2.recordId,
-    versionId: result2.versionId,
-    versionNumber: result2.versionNumber
+    status: result.job?.status ?? result.status ?? "captured",
+    jobId: result.job?.id,
+    sourceId: result.sourceId,
+    sourceItemId: result.sourceItemId,
+    recordId: result.recordId,
+    versionId: result.versionId,
+    versionNumber: result.versionNumber
   };
 }
-function workRecordResult(result2) {
+function workRecordResult(result) {
   return {
-    status: result2.job.status,
-    jobId: result2.job.id,
-    recordId: result2.recordId,
-    versionId: result2.versionId,
-    versionNumber: result2.versionNumber
+    status: result.job.status,
+    jobId: result.job.id,
+    recordId: result.recordId,
+    versionId: result.versionId,
+    versionNumber: result.versionNumber
   };
 }
 var init_results = __esm({
@@ -842,16 +869,16 @@ var init_results = __esm({
 // ../tools/dist/captureTools.js
 async function executeCaptureText(input, toolInput) {
   const capture = parseCaptureText(toolInput);
-  const result2 = await input.service.ingestText({ auth: input.auth, ...capture });
-  return captureResult(result2);
+  const result = await input.service.ingestText({ auth: input.auth, ...capture });
+  return captureResult(result);
 }
 async function executeCaptureFile(input, toolInput) {
   if (input.service.ingestFile === void 0) {
     throw new Error("Tool 'capture.file' requires a file ingestion service contract.");
   }
   const file = parseCaptureFile(toolInput);
-  const result2 = await input.service.ingestFile({ auth: input.auth, ...file });
-  return captureResult(result2);
+  const result = await input.service.ingestFile({ auth: input.auth, ...file });
+  return captureResult(result);
 }
 async function executeCaptureBatch(input, toolInput) {
   const batch = parseCaptureBatch(toolInput);
@@ -859,16 +886,16 @@ async function executeCaptureBatch(input, toolInput) {
   for (const item of batch.items) {
     if (item.kind === "text") {
       const { kind: _kind2, ...capture } = item;
-      const result3 = await input.service.ingestText({ auth: input.auth, ...capture });
-      results.push(captureResult(result3));
+      const result2 = await input.service.ingestText({ auth: input.auth, ...capture });
+      results.push(captureResult(result2));
       continue;
     }
     if (input.service.ingestFile === void 0) {
       throw new Error("Tool 'capture.batch' requires a file ingestion service contract.");
     }
     const { kind: _kind, ...file } = item;
-    const result2 = await input.service.ingestFile({ auth: input.auth, ...file });
-    results.push(captureResult(result2));
+    const result = await input.service.ingestFile({ auth: input.auth, ...file });
+    results.push(captureResult(result));
   }
   return results;
 }
@@ -941,6 +968,15 @@ function skillToolHandlers(input, toolInput) {
       if (input.service.teachSkill === void 0)
         throw missingSkillService("skill.teach");
       return input.service.teachSkill({ auth: input.auth, ...parseSkillTeach(toolInput) });
+    },
+    "skill.feedback": () => {
+      if (input.service.reportFeedbackSignal === void 0) {
+        throw missingSkillService("skill.feedback");
+      }
+      return input.service.reportFeedbackSignal({
+        auth: input.auth,
+        ...parseSkillFeedback(toolInput)
+      });
     }
   };
 }
@@ -950,7 +986,8 @@ function skillToolAvailability(service) {
     [service.getSkill !== void 0, ["skill.get"]],
     [service.getSkillFile !== void 0, ["skill.file"]],
     [service.recordSkillExercise !== void 0, ["skill.exercise"]],
-    [service.teachSkill !== void 0, ["skill.teach"]]
+    [service.teachSkill !== void 0, ["skill.teach"]],
+    [service.reportFeedbackSignal !== void 0, ["skill.feedback"]]
   ];
 }
 function parseSkillExercise(input) {
@@ -983,6 +1020,29 @@ function parseSkillTeach(input) {
     visibility
   };
 }
+function parseSkillFeedback(input) {
+  const exerciseRef = optionalObject(input, "exerciseRef");
+  const subjectRef = optionalObject(input, "subjectRef");
+  const polarity = requireString(input, "polarity");
+  const strength = requireString(input, "strength");
+  if (!isSkillFeedbackPolarity(polarity)) {
+    throw new Error("polarity must be positive, negative, mixed, or unknown.");
+  }
+  if (!isSkillFeedbackStrength(strength)) {
+    throw new Error("strength must be weak, medium, or strong.");
+  }
+  return {
+    skillId: requireString(input, "skillId"),
+    skillVersionId: requireString(input, "skillVersionId"),
+    exerciseRef: exerciseRef === void 0 ? void 0 : { exerciseId: requireString(exerciseRef, "exerciseId") },
+    subjectRef,
+    signalKind: requireString(input, "signalKind"),
+    polarity,
+    strength,
+    payload: optionalObject(input, "payload") ?? {},
+    idempotencyKey: requireString(input, "idempotencyKey")
+  };
+}
 function requireSkillOutputRef(input, key) {
   const value = input[key];
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1000,6 +1060,22 @@ function requireSkillOutputRef(input, key) {
     return { kind: "external", externalRef: requireString(ref, "externalRef") };
   }
   throw new Error(`${key}.kind must be record or external.`);
+}
+function optionalObject(input, key) {
+  const value = input[key];
+  if (value === void 0) {
+    return void 0;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${key} must be an object.`);
+  }
+  return value;
+}
+function isSkillFeedbackPolarity(value) {
+  return value === "positive" || value === "negative" || value === "mixed" || value === "unknown";
+}
+function isSkillFeedbackStrength(value) {
+  return value === "weak" || value === "medium" || value === "strong";
 }
 function missingSkillService(toolName) {
   return new Error(`Tool '${toolName}' requires a runtime service contract.`);
@@ -1267,7 +1343,7 @@ function createRuntimeToolExecutor(input) {
         throw error;
       }
       try {
-        const result2 = await handler();
+        const result = await handler();
         logToolCall({
           auth: input.auth,
           onToolLog: input.onToolLog,
@@ -1275,9 +1351,9 @@ function createRuntimeToolExecutor(input) {
           toolInput,
           status: "success",
           startedAt,
-          result: result2
+          result
         });
-        return result2;
+        return result;
       } catch (error) {
         logToolCall({
           auth: input.auth,
@@ -1411,16 +1487,16 @@ async function executeDecisionCreate(input, toolInput) {
     throw new Error("Tool 'decision.create' requires a work-record service contract.");
   }
   const decision = parseDecision(toolInput);
-  const result2 = await input.service.createDecision({ auth: input.auth, ...decision });
-  return workRecordResult(result2);
+  const result = await input.service.createDecision({ auth: input.auth, ...decision });
+  return workRecordResult(result);
 }
 async function executeTaskCreate(input, toolInput) {
   if (input.service.createTask === void 0) {
     throw new Error("Tool 'task.create' requires a work-record service contract.");
   }
   const task = parseTask(toolInput);
-  const result2 = await input.service.createTask({ auth: input.auth, ...task });
-  return workRecordResult(result2);
+  const result = await input.service.createTask({ auth: input.auth, ...task });
+  return workRecordResult(result);
 }
 function executeSourceList(input) {
   if (input.service.listSources === void 0) {
@@ -1471,16 +1547,16 @@ async function executeRecordCreateMarkdown(input, toolInput) {
     throw new Error("Tool 'record.create_markdown' requires a record write service contract.");
   }
   const record = parseMarkdownRecord(toolInput);
-  const result2 = await input.service.createMarkdownRecord({ auth: input.auth, ...record });
-  return workRecordResult(result2);
+  const result = await input.service.createMarkdownRecord({ auth: input.auth, ...record });
+  return workRecordResult(result);
 }
 async function executeRecordPatchSection(input, toolInput) {
   if (input.service.patchRecordSection === void 0) {
     throw new Error("Tool 'record.patch_section' requires a record write service contract.");
   }
   const patch = parseRecordSectionPatch(toolInput);
-  const result2 = await input.service.patchRecordSection({ auth: input.auth, ...patch });
-  return workRecordResult(result2);
+  const result = await input.service.patchRecordSection({ auth: input.auth, ...patch });
+  return workRecordResult(result);
 }
 function executeRecordVersions(input, toolInput) {
   if (input.service.listRecordVersions === void 0) {
@@ -1563,11 +1639,11 @@ function createMcpAdapter(input) {
         return errorResult2("tool_unavailable", `Tool '${call.name}' is unavailable for this MCP transport or scope.`);
       }
       try {
-        const result2 = await input.executor.execute(call.name, call.arguments);
+        const result = await input.executor.execute(call.name, call.arguments);
         return {
           isError: false,
-          structuredContent: result2,
-          content: [{ type: "text", text: renderToolResult(result2) }]
+          structuredContent: result,
+          content: [{ type: "text", text: renderToolResult(result) }]
         };
       } catch (error) {
         return errorResult2(classifyToolError(error), messageForError(error));
@@ -1575,14 +1651,14 @@ function createMcpAdapter(input) {
     }
   };
 }
-function renderToolResult(result2) {
-  if (typeof result2 === "object" && result2 !== null && "contextMarkdown" in result2) {
-    const context = result2;
+function renderToolResult(result) {
+  if (typeof result === "object" && result !== null && "contextMarkdown" in result) {
+    const context = result;
     if (typeof context.contextMarkdown === "string") {
       return context.contextMarkdown;
     }
   }
-  return JSON.stringify(result2);
+  return JSON.stringify(result);
 }
 function classifyToolError(error) {
   if (error instanceof Error) {
@@ -1703,7 +1779,7 @@ var init_hostedMcpEntrypoint = __esm({
 
 // ../tools/dist/mcpJsonRpcCore.js
 function createMcpJsonRpcCore(input) {
-  const { adapter, config: config2 } = input;
+  const { adapter, config } = input;
   return {
     async handleMessage(message) {
       if (message.id === void 0) {
@@ -1717,7 +1793,7 @@ function createMcpJsonRpcCore(input) {
         return {
           jsonrpc: "2.0",
           id,
-          result: await dispatchRequest(message.method, message.params, adapter, config2)
+          result: await dispatchRequest(message.method, message.params, adapter, config)
         };
       } catch (err) {
         return errorResponse(id, -32601, err instanceof Error ? err.message : "Method not found");
@@ -1728,14 +1804,14 @@ function createMcpJsonRpcCore(input) {
 function parseErrorResponse() {
   return errorResponse(null, -32700, "Parse error");
 }
-async function dispatchRequest(method, params, adapter, config2) {
+async function dispatchRequest(method, params, adapter, config) {
   if (method === "initialize") {
     const requested = readProtocolVersion(params);
     return {
       protocolVersion: requested ?? MCP_PROTOCOL_VERSION,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: config2.serverName, version: config2.version },
-      instructions: config2.instructions
+      serverInfo: { name: config.serverName, version: config.version },
+      instructions: config.instructions
     };
   }
   if (method === "ping")
@@ -1749,23 +1825,23 @@ async function dispatchRequest(method, params, adapter, config2) {
   throw new Error(`Method '${method}' is not supported by Sift MCP.`);
 }
 function readProtocolVersion(params) {
-  if (!isRecord(params))
+  if (!isRecord2(params))
     return void 0;
   return typeof params.protocolVersion === "string" ? params.protocolVersion : void 0;
 }
 function parseToolCall(params) {
-  if (!isRecord(params) || typeof params.name !== "string") {
+  if (!isRecord2(params) || typeof params.name !== "string") {
     throw new Error("tools/call requires a tool name.");
   }
   return {
     name: params.name,
-    arguments: isRecord(params.arguments) ? params.arguments : {}
+    arguments: isRecord2(params.arguments) ? params.arguments : {}
   };
 }
 function errorResponse(id, code, message) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function normalizeId(value) {
@@ -1900,19 +1976,19 @@ function renderScope(scope) {
     ""
   ].join("\n");
 }
-function validateAuthenticatedScope(config2, now) {
+function validateAuthenticatedScope(config, now) {
   const requiredScope = [
-    ["apiBaseUrl", config2.apiBaseUrl],
-    ["workspaceId", config2.workspaceId],
-    ["brainId", config2.brainId],
-    ["principalId", config2.principalId]
+    ["apiBaseUrl", config.apiBaseUrl],
+    ["workspaceId", config.workspaceId],
+    ["brainId", config.brainId],
+    ["principalId", config.principalId]
   ];
   const missing = requiredScope.find(([, value]) => value.trim().length === 0);
   if (missing !== void 0) {
     throw new Error(`Missing authenticated CLI scope: ${missing[0]}.`);
   }
-  if (config2.tokenExpiresAt !== void 0) {
-    const expiresAt = Date.parse(config2.tokenExpiresAt);
+  if (config.tokenExpiresAt !== void 0) {
+    const expiresAt = Date.parse(config.tokenExpiresAt);
     if (!Number.isFinite(expiresAt)) {
       throw new Error("Invalid CLI auth expiry timestamp.");
     }
@@ -1921,49 +1997,49 @@ function validateAuthenticatedScope(config2, now) {
     }
   }
 }
-function renderSearchResult(result2) {
-  if (typeof result2 === "object" && result2 !== null && "contextMarkdown" in result2) {
-    const context = result2;
+function renderSearchResult(result) {
+  if (typeof result === "object" && result !== null && "contextMarkdown" in result) {
+    const context = result;
     return `${context.contextMarkdown}
 `;
   }
-  return `${JSON.stringify(result2)}
+  return `${JSON.stringify(result)}
 `;
 }
-function renderRecordResult(result2) {
-  if (typeof result2 === "object" && result2 !== null && "markdown" in result2) {
-    const record = result2;
+function renderRecordResult(result) {
+  if (typeof result === "object" && result !== null && "markdown" in result) {
+    const record = result;
     return `${record.markdown}
 `;
   }
-  return `${JSON.stringify(result2)}
+  return `${JSON.stringify(result)}
 `;
 }
-function renderProfileResult(result2) {
-  if (typeof result2 === "object" && result2 !== null && "profileMarkdown" in result2) {
-    const profile = result2;
+function renderProfileResult(result) {
+  if (typeof result === "object" && result !== null && "profileMarkdown" in result) {
+    const profile = result;
     return `${profile.profileMarkdown}
 `;
   }
-  return `${JSON.stringify(result2)}
+  return `${JSON.stringify(result)}
 `;
 }
 function renderTools(tools) {
   return `${tools.map((tool) => `${tool.name}: ${tool.summary}`).join("\n")}
 `;
 }
-function renderSiftFound(result2) {
+function renderSiftFound(result) {
   return `Sift found:
 
-${renderSearchResult(result2)}`;
+${renderSearchResult(result)}`;
 }
-function renderWriteReceipt(action, result2) {
-  if (typeof result2 !== "object" || result2 === null) {
+function renderWriteReceipt(action, result) {
+  if (typeof result !== "object" || result === null) {
     return `${action} complete.
-${JSON.stringify(result2)}
+${JSON.stringify(result)}
 `;
   }
-  const record = result2;
+  const record = result;
   const lines = [`${action} complete.`];
   addReceiptLine(lines, "Record", record.recordId);
   addReceiptLine(lines, "Version", record.versionId);
@@ -1973,20 +2049,20 @@ ${JSON.stringify(result2)}
     addReceiptLine(lines, "Job", record.job.id);
   }
   if (lines.length === 1) {
-    lines.push(JSON.stringify(result2));
+    lines.push(JSON.stringify(result));
   }
   lines.push("");
   return lines.join("\n");
 }
-function renderDoctorResult(result2) {
-  return `${result2.checks.map((check) => {
+function renderDoctorResult(result) {
+  return `${result.checks.map((check) => {
     const fix = check.fix === void 0 ? "" : ` Fix: ${check.fix}`;
     return `[${check.status}] ${check.label}: ${check.detail}${fix}`;
   }).join("\n")}
 `;
 }
-function aliasJson(command, tool, result2) {
-  return `${JSON.stringify({ command, tool, result: result2 })}
+function aliasJson(command, tool, result) {
+  return `${JSON.stringify({ command, tool, result })}
 `;
 }
 function positionalArgs(args) {
@@ -2184,16 +2260,16 @@ async function agentRegister(executor, assertedAgentName, rest, json) {
   if (kind !== void 0) {
     input.kind = kind;
   }
-  const result2 = await executor.execute("agent.register", input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : renderAgentRegisterResult(result2));
+  const result = await executor.execute("agent.register", input);
+  return ok(json ? `${JSON.stringify(result)}
+` : renderAgentRegisterResult(result));
 }
-function renderAgentRegisterResult(result2) {
-  if (typeof result2 !== "object" || result2 === null || !("agent" in result2)) {
-    return `${JSON.stringify(result2)}
+function renderAgentRegisterResult(result) {
+  if (typeof result !== "object" || result === null || !("agent" in result)) {
+    return `${JSON.stringify(result)}
 `;
   }
-  const { agent, created, reactivated } = result2;
+  const { agent, created, reactivated } = result;
   const verb = created === true ? "Registered" : reactivated === true ? "Reactivated" : "Already registered";
   const actsFor = agent.actsForDisplayName === void 0 ? "" : ` (acting for ${agent.actsForDisplayName})`;
   return `${verb} agent worker '${agent.name ?? "unknown"}'${actsFor}.
@@ -2262,7 +2338,8 @@ var commandCapabilities = {
   "evidence:get": "record:read",
   "graph:neighbors": "record:read",
   "event:list": "record:read",
-  "audit:events": "event:audit:read"
+  "audit:events": "event:audit:read",
+  "roam:import": "source:manage"
 };
 function validateCommandCapability(input) {
   const capability = commandCapabilities[input.commandKey];
@@ -2300,6 +2377,190 @@ function withContractVersion(executor, contractVersion) {
   };
 }
 
+// src/roamImport.ts
+async function runRoamImportCommand(input) {
+  try {
+    const parsed = parseOptions(input.rest);
+    const scope = parseCliRoamScope(optionalOption(parsed, "scope") ?? "sift-tag");
+    const mode = parseCliRoamMode(optionalOption(parsed, "mode") ?? "personal");
+    const limit = parseIntegerOption(parsed, "limit", 100);
+    if (limit < 1 || limit > 100) {
+      throw new Error("Option --limit must be between 1 and 100.");
+    }
+    const wholeGraphConfirmed = input.rest.includes("--confirm-whole-graph") || input.rest.includes("--yes");
+    if (scope === "whole_graph" && !wholeGraphConfirmed) {
+      throw new Error("Option --confirm-whole-graph is required.");
+    }
+    const workspaceAttestation = input.rest.includes("--workspace-attestation") || input.rest.includes("--confirm-workspace");
+    if (mode === "workspace" && !workspaceAttestation) {
+      throw new Error("Option --workspace-attestation is required.");
+    }
+    if (input.reader === void 0) {
+      throw new Error(
+        "Roam import needs the local Roam helper. Run this command through the Sift CLI package."
+      );
+    }
+    if (input.importer === void 0) {
+      throw new Error("Not signed in. Run 'sift login', then retry 'sift roam import'.");
+    }
+    const records = await input.reader.exportPages({
+      scope,
+      graph: optionalOption(parsed, "graph"),
+      limit,
+      now: input.now
+    });
+    if (records.length === 0) {
+      throw new Error(
+        scope === "sift_tag" ? "No Roam pages marked [[Sift]] were found." : "No Roam pages were found for import."
+      );
+    }
+    const result = await input.importer.importRecords({
+      mode,
+      scope,
+      records,
+      defaultVisibility: visibilityOption(parsed),
+      workspaceAttestation,
+      wholeGraphConfirmed
+    });
+    return ok(input.json ? `${JSON.stringify(result)}
+` : renderRoamImportResult(result));
+  } catch (error) {
+    return errorResult(error, input.json);
+  }
+}
+function createSiftRoamImportClient(input) {
+  const fetchImpl = input.fetch ?? globalThis.fetch;
+  return {
+    async importRecords(request) {
+      const response = await fetchImpl(roamImportUrl(input.apiBaseUrl, input.workspaceId), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(request)
+      });
+      const body = await response.text();
+      const parsed = body.length > 0 ? parseJson(body) : {};
+      if (!response.ok) {
+        throw new Error(responseError(parsed, response.status));
+      }
+      return parseRoamImportResult(parsed);
+    }
+  };
+}
+function parseCliRoamScope(value) {
+  if (value === "sift-tag" || value === "sift_tag" || value === "marked" || value === "sift") {
+    return "sift_tag";
+  }
+  if (value === "whole-graph" || value === "whole_graph" || value === "everything") {
+    return "whole_graph";
+  }
+  throw new Error("Roam scope must be sift-tag or whole-graph.");
+}
+function parseCliRoamMode(value) {
+  if (value === "personal" || value === "workspace") return value;
+  throw new Error("Roam import mode must be personal or workspace.");
+}
+function visibilityOption(parsed) {
+  const visibility = optionalOption(parsed, "visibility");
+  if (visibility === void 0) return void 0;
+  const values = visibility.split(",").map((value) => value.trim()).filter((value) => value.length > 0);
+  if (values.length === 0) {
+    throw new Error("Option --visibility must include at least one visibility segment.");
+  }
+  return values;
+}
+function renderRoamImportResult(result) {
+  return [
+    `Imported ${result.importedCount} Roam pages.`,
+    `Stored: ${result.storedCount}`,
+    `Deduped: ${result.dedupedCount}`,
+    `Rejected: ${result.rejectedCount}`,
+    ""
+  ].join("\n");
+}
+function roamImportUrl(apiBaseUrl, workspaceId) {
+  const base = `${apiBaseUrl.replace(/\/+$/u, "")}/integrations/roam/import`;
+  return workspaceId === void 0 ? base : `${base}?workspaceId=${encodeURIComponent(workspaceId)}`;
+}
+function parseJson(body) {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error("Sift Roam import API returned invalid JSON.");
+  }
+}
+function responseError(parsed, status2) {
+  if (typeof parsed === "object" && parsed !== null) {
+    const record = parsed;
+    const message = record.message;
+    if (typeof message === "string" && message.trim().length > 0) return message;
+    const error = record.error;
+    if (typeof error === "object" && error !== null && "message" in error) {
+      const nested = error.message;
+      if (typeof nested === "string" && nested.trim().length > 0) return nested;
+    }
+  }
+  return `Sift Roam import API failed with status ${status2}.`;
+}
+function parseRoamImportResult(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Sift Roam import API returned an invalid result.");
+  }
+  const record = value;
+  if (record.providerKind !== "roam") {
+    throw new Error("Sift Roam import API returned an unexpected provider kind.");
+  }
+  return {
+    providerKind: "roam",
+    importedCount: integerField(record, "importedCount"),
+    storedCount: integerField(record, "storedCount"),
+    dedupedCount: integerField(record, "dedupedCount"),
+    rejectedCount: integerField(record, "rejectedCount")
+  };
+}
+function integerField(record, key) {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new Error(`Sift Roam import API result field ${key} must be an integer.`);
+  }
+  return value;
+}
+
+// src/mcpServeCommand.ts
+async function mcpServe(input) {
+  if (input.mcpServer === void 0) {
+    return fail("No local MCP server is configured for mcp.serve.");
+  }
+  if (input.executor === void 0) {
+    return fail("Not signed in. Run 'sift login', then 'sift mcp serve'.");
+  }
+  const result = await input.mcpServer.serve({
+    config: input.config,
+    executor: input.executor,
+    transport: "local_mcp"
+  });
+  if (result === void 0) return ok("");
+  return ok(`${JSON.stringify(result)}
+`);
+}
+
+// src/scopeCurrentCommand.ts
+function scopeCurrent(config, json) {
+  const scope = {
+    apiBaseUrl: config.apiBaseUrl,
+    tokenLabel: config.tokenLabel,
+    tokenExpiresAt: config.tokenExpiresAt,
+    principalId: config.principalId,
+    workspaceId: config.workspaceId,
+    brainId: config.brainId,
+    capabilities: config.capabilities
+  };
+  return ok(json ? `${JSON.stringify(scope)}
+` : renderScope(scope));
+}
+
 // src/specialCommands.ts
 import { readFile } from "fs/promises";
 
@@ -2317,24 +2578,24 @@ async function doctor(input) {
   checks.push(readToolsCheck(availableTools3));
   checks.push(writeToolsCheck(input.config, availableTools3));
   checks.push(recordGetCheck(availableTools3));
-  const result2 = {
+  const result = {
     ok: !checks.some((check) => check.status === "failed"),
     apiBaseUrl: input.config.apiBaseUrl.trim().length > 0 ? input.config.apiBaseUrl : void 0,
     scope: scopeResult(input.config),
     checks
   };
   return {
-    exitCode: result2.ok ? 0 : 1,
-    stdout: input.json ? `${JSON.stringify(result2)}
-` : renderDoctorResult(result2),
+    exitCode: result.ok ? 0 : 1,
+    stdout: input.json ? `${JSON.stringify(result)}
+` : renderDoctorResult(result),
     stderr: ""
   };
 }
 async function discoverToolNames(executor) {
   if (executor === void 0) return void 0;
   if (executor.listAvailableToolNames !== void 0) return executor.listAvailableToolNames();
-  const result2 = await executor.execute("tools.list", {});
-  return toolNamesFromResult(result2);
+  const result = await executor.execute("tools.list", {});
+  return toolNamesFromResult(result);
 }
 async function apiReachability(executor) {
   if (executor === void 0) return { reachable: false, detail: "No API executor is configured." };
@@ -2348,15 +2609,15 @@ async function apiReachability(executor) {
     };
   }
 }
-function scopeResult(config2) {
-  if (config2.workspaceId.trim().length === 0 || config2.brainId.trim().length === 0 || config2.principalId.trim().length === 0) {
+function scopeResult(config) {
+  if (config.workspaceId.trim().length === 0 || config.brainId.trim().length === 0 || config.principalId.trim().length === 0) {
     return void 0;
   }
   return {
-    workspaceId: config2.workspaceId,
-    brainId: config2.brainId,
-    principalId: config2.principalId,
-    capabilities: [...config2.capabilities]
+    workspaceId: config.workspaceId,
+    brainId: config.brainId,
+    principalId: config.principalId,
+    capabilities: [...config.capabilities]
   };
 }
 async function checkApi(executor) {
@@ -2372,8 +2633,8 @@ async function checkApi(executor) {
   const api = await apiReachability(executor);
   return api.reachable ? { id: "api", status: "ok", label: "API", detail: "whoami succeeded." } : { id: "api", status: "failed", label: "API", detail: api.detail };
 }
-function authCheck(config2, now) {
-  if (config2.apiBaseUrl.trim().length === 0 || config2.workspaceId.trim().length === 0 || config2.brainId.trim().length === 0 || config2.principalId.trim().length === 0) {
+function authCheck(config, now) {
+  if (config.apiBaseUrl.trim().length === 0 || config.workspaceId.trim().length === 0 || config.brainId.trim().length === 0 || config.principalId.trim().length === 0) {
     return {
       id: "auth",
       status: "failed",
@@ -2382,7 +2643,7 @@ function authCheck(config2, now) {
       fix: "Run sift login."
     };
   }
-  if (config2.tokenExpiresAt !== void 0 && Date.parse(config2.tokenExpiresAt) <= now.getTime()) {
+  if (config.tokenExpiresAt !== void 0 && Date.parse(config.tokenExpiresAt) <= now.getTime()) {
     return {
       id: "auth",
       status: "failed",
@@ -2393,8 +2654,8 @@ function authCheck(config2, now) {
   }
   return { id: "auth", status: "ok", label: "Auth", detail: "authenticated profile loaded." };
 }
-function scopeCheck(config2) {
-  if (config2.workspaceId.trim().length === 0 || config2.brainId.trim().length === 0) {
+function scopeCheck(config) {
+  if (config.workspaceId.trim().length === 0 || config.brainId.trim().length === 0) {
     return {
       id: "scope",
       status: "failed",
@@ -2407,14 +2668,14 @@ function scopeCheck(config2) {
     id: "scope",
     status: "ok",
     label: "Scope",
-    detail: `${config2.workspaceId}/${config2.brainId}`
+    detail: `${config.workspaceId}/${config.brainId}`
   };
 }
 function readToolsCheck(names) {
   return toolSetCheck("read-tools", "Read tools", ["context.assemble", "search.query"], names);
 }
-function writeToolsCheck(config2, names) {
-  const hasWrite = config2.capabilities.includes("record:write") || config2.capabilities.includes("source:write");
+function writeToolsCheck(config, names) {
+  const hasWrite = config.capabilities.includes("record:write") || config.capabilities.includes("source:write");
   if (!hasWrite) {
     return {
       id: "write-tools",
@@ -2453,9 +2714,9 @@ function toolSetCheck(id, label, required, names) {
   const missing = required.filter((name) => !names.includes(name));
   return missing.length === 0 ? { id, status: "ok", label, detail: "required tools are available." } : { id, status: "failed", label, detail: `missing ${missing.join(", ")}.` };
 }
-function toolNamesFromResult(result2) {
-  if (!Array.isArray(result2)) return [];
-  return result2.flatMap((item) => {
+function toolNamesFromResult(result) {
+  if (!Array.isArray(result)) return [];
+  return result.flatMap((item) => {
     if (typeof item === "object" && item !== null && "name" in item) {
       const name = item.name;
       return typeof name === "string" ? [name] : [];
@@ -2488,6 +2749,7 @@ var knownTopLevelCommands = /* @__PURE__ */ new Set([
   "mcp",
   "record",
   "remember",
+  "roam",
   "scope",
   "search",
   "show",
@@ -2580,11 +2842,11 @@ async function ask(executor, rest, json) {
   }
   const parsed = parseOptions(rest);
   const query = argsWithoutOptions(rest).join(" ").trim();
-  const result2 = await executor.execute("context.assemble", {
+  const result = await executor.execute("context.assemble", {
     query,
     maxChars: parseIntegerOption(parsed, "max-chars", 8e3)
   });
-  return ok(json ? aliasJson("ask", "context.assemble", result2) : renderSiftFound(result2));
+  return ok(json ? aliasJson("ask", "context.assemble", result) : renderSiftFound(result));
 }
 async function simpleSearch(executor, rest, json) {
   if (executor === void 0) {
@@ -2592,11 +2854,11 @@ async function simpleSearch(executor, rest, json) {
   }
   const parsed = parseOptions(rest);
   const query = argsWithoutOptions(rest).join(" ").trim();
-  const result2 = await executor.execute("search.query", {
+  const result = await executor.execute("search.query", {
     query,
     limit: parseIntegerOption(parsed, "limit", 10)
   });
-  return ok(json ? aliasJson("search", "search.query", result2) : renderSearchResult(result2));
+  return ok(json ? aliasJson("search", "search.query", result) : renderSearchResult(result));
 }
 async function remember(executor, rest, json, readStdin2, now) {
   if (executor === void 0) {
@@ -2615,8 +2877,8 @@ async function remember(executor, rest, json, readStdin2, now) {
     visibility: [optionalOption(parsed, "visibility") ?? DEFAULT_CLI_VISIBILITY],
     markdown
   };
-  const result2 = await executor.execute("capture.text", input);
-  return ok(json ? aliasJson("remember", "capture.text", result2) : renderWriteReceipt("Remember", result2));
+  const result = await executor.execute("capture.text", input);
+  return ok(json ? aliasJson("remember", "capture.text", result) : renderWriteReceipt("Remember", result));
 }
 async function addFile(executor, fileReader, rest, json) {
   if (executor === void 0) {
@@ -2638,8 +2900,8 @@ async function addFile(executor, fileReader, rest, json) {
     bytes,
     visibility: [optionalOption(parsed, "visibility") ?? DEFAULT_CLI_VISIBILITY]
   };
-  const result2 = await executor.execute("capture.file", input);
-  return ok(json ? aliasJson("add", "capture.file", result2) : renderWriteReceipt("Add", result2));
+  const result = await executor.execute("capture.file", input);
+  return ok(json ? aliasJson("add", "capture.file", result) : renderWriteReceipt("Add", result));
 }
 async function edit(executor, rest, json) {
   if (executor === void 0) {
@@ -2664,8 +2926,8 @@ async function edit(executor, rest, json) {
   if (expectedMarkdown !== void 0) {
     input.expectedMarkdown = expectedMarkdown;
   }
-  const result2 = await executor.execute("record.patch_section", input);
-  return ok(json ? aliasJson("edit", "record.patch_section", result2) : renderWriteReceipt("Edit", result2));
+  const result = await executor.execute("record.patch_section", input);
+  return ok(json ? aliasJson("edit", "record.patch_section", result) : renderWriteReceipt("Edit", result));
 }
 async function decide(executor, rest, json) {
   if (executor === void 0) {
@@ -2678,8 +2940,8 @@ async function decide(executor, rest, json) {
     visibility: [optionalOption(parsed, "visibility") ?? DEFAULT_CLI_VISIBILITY]
   };
   addOptionalWorkAliasMetadata(input, parsed);
-  const result2 = await executor.execute("decision.create", input);
-  return ok(json ? aliasJson("decide", "decision.create", result2) : renderWriteReceipt("Decision", result2));
+  const result = await executor.execute("decision.create", input);
+  return ok(json ? aliasJson("decide", "decision.create", result) : renderWriteReceipt("Decision", result));
 }
 async function todo(executor, rest, json) {
   if (executor === void 0) {
@@ -2696,8 +2958,8 @@ async function todo(executor, rest, json) {
   const dueDate = optionalOption(parsed, "due-date");
   if (dueDate !== void 0) input.dueDate = dueDate;
   addOptionalWorkAliasMetadata(input, parsed);
-  const result2 = await executor.execute("task.create", input);
-  return ok(json ? aliasJson("todo", "task.create", result2) : renderWriteReceipt("Task", result2));
+  const result = await executor.execute("task.create", input);
+  return ok(json ? aliasJson("todo", "task.create", result) : renderWriteReceipt("Task", result));
 }
 async function show(executor, rest, json) {
   if (executor === void 0) {
@@ -2720,21 +2982,21 @@ async function show(executor, rest, json) {
   if (sectionAnchor !== void 0) {
     input.sectionAnchor = sectionAnchor;
   }
-  const result2 = await executor.execute("record.get", input);
-  return ok(json ? aliasJson("show", "record.get", result2) : renderRecordResult(result2));
+  const result = await executor.execute("record.get", input);
+  return ok(json ? aliasJson("show", "record.get", result) : renderRecordResult(result));
 }
-async function status(config2, executor, json) {
+async function status(config, executor, json) {
   const scope = {
-    apiBaseUrl: config2.apiBaseUrl,
-    principalId: config2.principalId,
-    workspaceId: config2.workspaceId,
-    brainId: config2.brainId,
-    capabilities: [...config2.capabilities]
+    apiBaseUrl: config.apiBaseUrl,
+    principalId: config.principalId,
+    workspaceId: config.workspaceId,
+    brainId: config.brainId,
+    capabilities: [...config.capabilities]
   };
   const api = await apiReachability(executor);
-  const result2 = { scope, api };
+  const result = { scope, api };
   if (json) {
-    return ok(`${JSON.stringify({ command: "status", result: result2 })}
+    return ok(`${JSON.stringify({ command: "status", result })}
 `);
   }
   return ok(`${renderScope({ ...scope, tokenLabel: "configured" })}API reachable: ${api.reachable}
@@ -3005,9 +3267,9 @@ function toolsHelp(input) {
   return executeSimple(input.executor, "tools.help", { name }, input.json);
 }
 async function executeSimple(executor, name, toolInput, json) {
-  const result2 = await executor.execute(name, toolInput);
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute(name, toolInput);
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 
@@ -3028,7 +3290,7 @@ function createHostedApiExecutor(input) {
         body: JSON.stringify({ input: toolInput }, serializeJsonValue)
       });
       const body = await response.text();
-      const parsed = body.length > 0 ? parseJson(body) : {};
+      const parsed = body.length > 0 ? parseJson2(body) : {};
       if (!response.ok) {
         throw new Error(errorMessage(parsed, response.status));
       }
@@ -3045,7 +3307,7 @@ function serializeJsonValue(_key, value) {
 function toolUrl(apiBaseUrl, name) {
   return `${apiBaseUrl.replace(/\/+$/u, "")}/agent-tools/${encodeURIComponent(name)}`;
 }
-function parseJson(body) {
+function parseJson2(body) {
   try {
     return JSON.parse(body);
   } catch {
@@ -3148,7 +3410,19 @@ async function runSiftCli(rawInput) {
     "task:create": () => createTask(input.executor, rest, json),
     "agent:register": () => agentRegister(input.executor, input.agentName, rest, json),
     "agent:status": () => executeSimple2(input.executor, "agent.status", {}, json),
-    "mcp:serve": () => mcpServe(input.mcpServer, input.config, rawInput.executor, json),
+    "mcp:serve": () => mcpServe({
+      mcpServer: input.mcpServer,
+      config: input.config,
+      executor: rawInput.executor
+    }),
+    "roam:import": () => runRoamImportCommand({
+      rest,
+      json,
+      config: input.config,
+      reader: input.roamReader,
+      importer: input.roamImporter,
+      now: input.now ?? /* @__PURE__ */ new Date()
+    }),
     "login:": () => authCommand(input.authCommands, "login", { rest: commandRest, json }),
     "auth:status": () => authCommand(input.authCommands, "status", { json }),
     "logout:": () => authCommand(input.authCommands, "logout", { json })
@@ -3172,39 +3446,14 @@ async function runSiftCli(rawInput) {
     return errorResult(error, json);
   }
 }
-async function mcpServe(mcpServer, config2, executor, _json) {
-  if (mcpServer === void 0) {
-    return fail("No local MCP server is configured for mcp.serve.");
-  }
-  if (executor === void 0) {
-    return fail("Not signed in. Run 'sift login', then 'sift mcp serve'.");
-  }
-  const result2 = await mcpServer.serve({ config: config2, executor, transport: "local_mcp" });
-  if (result2 === void 0) return ok("");
-  return ok(`${JSON.stringify(result2)}
-`);
-}
-function scopeCurrent(config2, json) {
-  const scope = {
-    apiBaseUrl: config2.apiBaseUrl,
-    tokenLabel: config2.tokenLabel,
-    tokenExpiresAt: config2.tokenExpiresAt,
-    principalId: config2.principalId,
-    workspaceId: config2.workspaceId,
-    brainId: config2.brainId,
-    capabilities: config2.capabilities
-  };
-  return ok(json ? `${JSON.stringify(scope)}
-` : renderScope(scope));
-}
 async function searchQuery(executor, rest, json) {
   if (executor === void 0) {
     return fail("No Sift API executor is configured for search.query.");
   }
   const query = rest.join(" ").trim();
-  const result2 = await executor.execute("search.query", { query, limit: 10 });
-  return ok(json ? `${JSON.stringify(result2)}
-` : renderSearchResult(result2));
+  const result = await executor.execute("search.query", { query, limit: 10 });
+  return ok(json ? `${JSON.stringify(result)}
+` : renderSearchResult(result));
 }
 async function contextAssemble(executor, rest, json) {
   if (executor === void 0) {
@@ -3212,12 +3461,12 @@ async function contextAssemble(executor, rest, json) {
   }
   const parsed = parseOptions(rest);
   const query = positionalArgs(rest).join(" ").trim();
-  const result2 = await executor.execute("context.assemble", {
+  const result = await executor.execute("context.assemble", {
     query,
     maxChars: parseIntegerOption(parsed, "max-chars", 4e3)
   });
-  return ok(json ? `${JSON.stringify(result2)}
-` : renderSearchResult(result2));
+  return ok(json ? `${JSON.stringify(result)}
+` : renderSearchResult(result));
 }
 async function contextProfile(executor, rest, json) {
   if (executor === void 0) {
@@ -3231,17 +3480,17 @@ async function contextProfile(executor, rest, json) {
   if (query.length > 0) {
     input.query = query;
   }
-  const result2 = await executor.execute("context.profile", input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : renderProfileResult(result2));
+  const result = await executor.execute("context.profile", input);
+  return ok(json ? `${JSON.stringify(result)}
+` : renderProfileResult(result));
 }
 async function executeSimple2(executor, name, toolInput, json) {
   if (executor === void 0) {
     return fail(`No Sift API executor is configured for ${name}.`);
   }
-  const result2 = await executor.execute(name, toolInput);
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute(name, toolInput);
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function captureText(executor, rest, json) {
@@ -3249,15 +3498,15 @@ async function captureText(executor, rest, json) {
     return fail("No Sift API executor is configured for capture.text.");
   }
   const parsed = parseOptions(rest);
-  const result2 = await executor.execute("capture.text", {
+  const result = await executor.execute("capture.text", {
     sourceName: requireOption(parsed, "source"),
     externalId: requireOption(parsed, "external-id"),
     title: requireOption(parsed, "title"),
     visibility: [requireOption(parsed, "visibility")],
     markdown: requireOption(parsed, "markdown")
   });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function captureFile(executor, fileReader, rest, json) {
@@ -3270,7 +3519,7 @@ async function captureFile(executor, fileReader, rest, json) {
   }
   const parsed = parseOptions(optionArgs);
   const bytes = await fileReader(path);
-  const result2 = await executor.execute("capture.file", {
+  const result = await executor.execute("capture.file", {
     sourceName: requireOption(parsed, "source"),
     externalId: requireOption(parsed, "external-id"),
     title: requireOption(parsed, "title"),
@@ -3279,8 +3528,8 @@ async function captureFile(executor, fileReader, rest, json) {
     bytes,
     visibility: [requireOption(parsed, "visibility")]
   });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function captureBatch(executor, fileReader, rest, json) {
@@ -3292,9 +3541,9 @@ async function captureBatch(executor, fileReader, rest, json) {
     return fail("Missing required manifest path for capture.batch.");
   }
   const manifest = parseBatchManifest(await fileReader(manifestPath));
-  const result2 = await executor.execute("capture.batch", { items: manifest });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("capture.batch", { items: manifest });
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 function parseBatchManifest(bytes) {
@@ -3319,18 +3568,18 @@ async function createDecision(executor, rest, json) {
     input.rationale = rationale;
   }
   addOptionalWorkMetadata(input, parsed);
-  const result2 = await executor.execute("decision.create", input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("decision.create", input);
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function sourceList(executor, json) {
   if (executor === void 0) {
     return fail("No Sift API executor is configured for source.list.");
   }
-  const result2 = await executor.execute("source.list", {});
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("source.list", {});
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function sourceCreate(executor, rest, json) {
@@ -3338,12 +3587,12 @@ async function sourceCreate(executor, rest, json) {
     return fail("No Sift API executor is configured for source.create.");
   }
   const parsed = parseOptions(rest);
-  const result2 = await executor.execute("source.create", {
+  const result = await executor.execute("source.create", {
     name: requireOption(parsed, "name"),
     visibility: [requireOption(parsed, "visibility")]
   });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function sourceRead(executor, command, rest, json) {
@@ -3355,9 +3604,9 @@ async function sourceRead(executor, command, rest, json) {
   if (sourceId === void 0 || sourceId.trim().length === 0) {
     return fail(`Missing required source ID for ${toolName}.`);
   }
-  const result2 = await executor.execute(toolName, { sourceId });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute(toolName, { sourceId });
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function ingestionStatus(executor, rest, json) {
@@ -3368,18 +3617,18 @@ async function ingestionStatus(executor, rest, json) {
   if (jobId === void 0 || jobId.trim().length === 0) {
     return fail("Missing required job ID for ingestion.status.");
   }
-  const result2 = await executor.execute("ingestion.status", { jobId });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("ingestion.status", { jobId });
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function recordList(executor, json) {
   if (executor === void 0) {
     return fail("No Sift API executor is configured for record.list.");
   }
-  const result2 = await executor.execute("record.list", {});
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("record.list", {});
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function recordRead(executor, toolName, rest, json) {
@@ -3397,23 +3646,23 @@ async function recordRead(executor, toolName, rest, json) {
       input.sectionAnchor = sectionAnchor;
     }
   }
-  const result2 = await executor.execute(toolName, input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : renderRecordResult(result2));
+  const result = await executor.execute(toolName, input);
+  return ok(json ? `${JSON.stringify(result)}
+` : renderRecordResult(result));
 }
 async function createMarkdownRecord(executor, rest, json) {
   if (executor === void 0) {
     return fail("No Sift API executor is configured for record.create_markdown.");
   }
   const parsed = parseOptions(rest);
-  const result2 = await executor.execute("record.create_markdown", {
+  const result = await executor.execute("record.create_markdown", {
     recordType: requireOption(parsed, "type"),
     title: requireOption(parsed, "title"),
     markdown: requireOption(parsed, "markdown"),
     visibility: [requireOption(parsed, "visibility")]
   });
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function patchRecordSection(executor, rest, json) {
@@ -3437,9 +3686,9 @@ async function patchRecordSection(executor, rest, json) {
   if (expectedMarkdown !== void 0) {
     input.expectedMarkdown = expectedMarkdown;
   }
-  const result2 = await executor.execute("record.patch_section", input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("record.patch_section", input);
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function createTask(executor, rest, json) {
@@ -3468,9 +3717,9 @@ async function createTask(executor, rest, json) {
     input.rationale = rationale;
   }
   addOptionalWorkMetadata(input, parsed);
-  const result2 = await executor.execute("task.create", input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("task.create", input);
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function auditEvents(executor, rest, json) {
@@ -3482,9 +3731,9 @@ async function auditEvents(executor, rest, json) {
   if (targetId !== void 0 && targetId.trim().length > 0) {
     input.targetId = targetId;
   }
-  const result2 = await executor.execute("audit.events", input);
-  return ok(json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await executor.execute("audit.events", input);
+  return ok(json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 async function idTool(input) {
@@ -3495,9 +3744,9 @@ async function idTool(input) {
   if (id === void 0 || id.trim().length === 0) {
     return fail(`Missing required ${input.idLabel} for ${input.toolName}.`);
   }
-  const result2 = await input.executor.execute(input.toolName, { [input.inputKey]: id });
-  return ok(input.json ? `${JSON.stringify(result2)}
-` : `${JSON.stringify(result2)}
+  const result = await input.executor.execute(input.toolName, { [input.inputKey]: id });
+  return ok(input.json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result)}
 `);
 }
 
@@ -3523,10 +3772,10 @@ async function readStoredSiftConfig(input) {
   return parseStoredSiftConfig(JSON.parse(raw));
 }
 async function writeStoredSiftConfig(input) {
-  const config2 = parseStoredSiftConfig(input.config);
+  const config = parseStoredSiftConfig(input.config);
   const path = resolveSiftConfigPath(input);
   await mkdir(dirname(path), { recursive: true, mode: 448 });
-  await writeFile(path, `${JSON.stringify(config2, null, 2)}
+  await writeFile(path, `${JSON.stringify(config, null, 2)}
 `, { mode: 384 });
   await chmod(path, 384);
 }
@@ -3747,14 +3996,14 @@ function createMacOSKeychainStore(input = {}) {
   return {
     async assertAvailable() {
       await requireSupported();
-      const result2 = await runCommand(securityPath, ["list-keychains"]);
-      if (result2.exitCode !== 0) {
+      const result = await runCommand(securityPath, ["list-keychains"]);
+      if (result.exitCode !== 0) {
         throw new UnsupportedCredentialStoreError();
       }
     },
     async read(readInput) {
       await requireSupported();
-      const result2 = await runCommand(securityPath, [
+      const result = await runCommand(securityPath, [
         "find-generic-password",
         "-s",
         serviceName,
@@ -3762,15 +4011,15 @@ function createMacOSKeychainStore(input = {}) {
         account(readInput),
         "-w"
       ]);
-      if (result2.exitCode !== 0) {
+      if (result.exitCode !== 0) {
         return void 0;
       }
-      const secret = result2.stdout.trim();
+      const secret = result.stdout.trim();
       return secret.length === 0 ? void 0 : secret;
     },
     async write(writeInput) {
       await requireSupported();
-      const result2 = await runCommand(securityPath, [
+      const result = await runCommand(securityPath, [
         "add-generic-password",
         "-U",
         "-s",
@@ -3780,7 +4029,7 @@ function createMacOSKeychainStore(input = {}) {
         "-w",
         writeInput.secret
       ]);
-      if (result2.exitCode !== 0) {
+      if (result.exitCode !== 0) {
         throw new Error("Failed to write Sift CLI token secret to macOS Keychain.");
       }
     },
@@ -3798,8 +4047,8 @@ function createMacOSKeychainStore(input = {}) {
 }
 async function runSecurityCommand(file, args) {
   try {
-    const result2 = await execFileAsync(file, args);
-    return { stdout: result2.stdout, stderr: result2.stderr, exitCode: 0 };
+    const result = await execFileAsync(file, args);
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
   } catch (error) {
     if (isExecError(error)) {
       return {
@@ -3824,6 +4073,7 @@ import { hostname as hostname3 } from "os";
 import { promisify as promisify2 } from "util";
 
 // src/auth/loginHelpers.ts
+var DEFAULT_SIFT_API_BASE_URL = "https://sift-wiki-api.fly.dev";
 async function resolveLoginApiBaseUrl(input) {
   const options = parseOptions(input.argv);
   const fromFlag = clean2(options.get("api-base-url"));
@@ -3833,7 +4083,7 @@ async function resolveLoginApiBaseUrl(input) {
   const stored = await readStoredSiftConfig({ homeDir: input.homeDir });
   const profile = stored?.profiles[stored.currentProfile];
   if (profile !== void 0) return normalizeUrl(profile.apiBaseUrl);
-  return "https://api.sift.com";
+  return DEFAULT_SIFT_API_BASE_URL;
 }
 function requestedCapabilities(rest) {
   const option = parseOptions(rest).get("capability");
@@ -3874,15 +4124,15 @@ function resolveCliOAuthConfig(input) {
     return void 0;
   }
   const registrationUrl = clean3(options.get("oauth-registration-url")) ?? clean3(input.env.SIFT_OAUTH_REGISTRATION_URL);
-  const config2 = { authorizeUrl, tokenUrl, clientId };
+  const config = { authorizeUrl, tokenUrl, clientId };
   if (registrationUrl !== void 0) {
-    config2.registrationUrl = registrationUrl;
+    config.registrationUrl = registrationUrl;
   }
   const scopes = parseScopeList(clean3(options.get("oauth-scopes")) ?? clean3(input.env.SIFT_OAUTH_SCOPES));
   if (scopes.length > 0) {
-    config2.defaultScopes = scopes;
+    config.defaultScopes = scopes;
   }
-  return config2;
+  return config;
 }
 function scopesForCapabilities(capabilities) {
   const scopes = /* @__PURE__ */ new Set(["read"]);
@@ -4057,11 +4307,11 @@ async function finalizeOAuthLogin(input, tokens) {
     tokenKind: "oauth",
     refreshable: tokens.refreshToken !== void 0
   };
-  const result2 = { profile, accessToken: tokens.accessToken };
+  const result = { profile, accessToken: tokens.accessToken };
   if (tokens.refreshToken !== void 0) {
-    result2.refreshToken = tokens.refreshToken;
+    result.refreshToken = tokens.refreshToken;
   }
-  return result2;
+  return result;
 }
 function buildAuthorizeUrl(input) {
   const url = new URL(input.oauth.authorizeUrl);
@@ -4294,7 +4544,7 @@ function oauthRefresherFor(input, rest) {
 async function oauthBrowserLoginFlow(input, rest, json) {
   const apiBaseUrl = await resolveLoginApiBaseUrl({ argv: rest, env: input.env, homeDir: input.homeDir });
   const oauth = resolveOAuthConfigOrThrow(input, rest);
-  const result2 = await oauthBrowserLogin({
+  const result = await oauthBrowserLogin({
     apiBaseUrl,
     appBaseUrl: resolveAppBaseUrl(input.env, apiBaseUrl),
     oauth,
@@ -4309,16 +4559,16 @@ async function oauthBrowserLoginFlow(input, rest, json) {
   return persistConvergedLogin(
     input,
     {
-      profile: result2.profile,
-      accessToken: result2.accessToken,
-      ...result2.refreshToken === void 0 ? {} : { refreshToken: result2.refreshToken }
+      profile: result.profile,
+      accessToken: result.accessToken,
+      ...result.refreshToken === void 0 ? {} : { refreshToken: result.refreshToken }
     },
     json
   );
 }
 async function serviceTokenLoginFlow(input, rest, json) {
   const apiBaseUrl = await resolveLoginApiBaseUrl({ argv: rest, env: input.env, homeDir: input.homeDir });
-  const result2 = await serviceTokenLogin({
+  const result = await serviceTokenLogin({
     apiBaseUrl,
     appBaseUrl: resolveAppBaseUrl(input.env, apiBaseUrl),
     rest,
@@ -4327,7 +4577,7 @@ async function serviceTokenLoginFlow(input, rest, json) {
     credentialStore: input.credentialStore,
     resolveCallerBearer: defaultCallerBearerResolver(input)
   });
-  return persistConvergedLogin(input, { profile: result2.profile, accessToken: result2.token }, json);
+  return persistConvergedLogin(input, { profile: result.profile, accessToken: result.token }, json);
 }
 function resolveOAuthConfigOrThrow(input, rest) {
   const oauth = input.oauthConfig ?? resolveCliOAuthConfig({ argv: rest, env: input.env });
@@ -4388,19 +4638,19 @@ function resolveAppBaseUrl(env, apiBaseUrl) {
   if (fromEnv !== void 0) return normalizeUrl(fromEnv);
   return apiBaseUrl.replace(/\/\/api\./u, "//");
 }
-async function persistConvergedLogin(input, result2, json) {
-  const { profile } = result2;
+async function persistConvergedLogin(input, result, json) {
+  const { profile } = result;
   try {
     await input.credentialStore.write({
       apiBaseUrl: profile.apiBaseUrl,
       tokenId: profile.tokenId,
-      secret: result2.accessToken
+      secret: result.accessToken
     });
-    if (result2.refreshToken !== void 0) {
+    if (result.refreshToken !== void 0) {
       await input.credentialStore.write({
         apiBaseUrl: profile.apiBaseUrl,
         tokenId: refreshSlotTokenId(profile.tokenId),
-        secret: result2.refreshToken
+        secret: result.refreshToken
       });
     }
   } catch (error) {
@@ -4510,9 +4760,9 @@ async function deviceLogin(input, rest, sleep, json) {
       { requestId: request.requestId, userCode: request.userCode }
     );
     if ("token" in token) {
-      const result2 = await persistLogin(input, token, json);
-      return result2.exitCode === 0 ? { ...result2, stdout: `Code: ${request.userCode}
-${result2.stdout}` } : result2;
+      const result = await persistLogin(input, token, json);
+      return result.exitCode === 0 ? { ...result, stdout: `Code: ${request.userCode}
+${result.stdout}` } : result;
     }
     if (token.status === "authorization_pending" || token.status === "slow_down") {
       intervalSeconds = token.intervalSeconds;
@@ -4536,8 +4786,8 @@ async function persistLogin(input, token, json) {
       `Sift CLI login storage failure: ${error instanceof Error ? error.message : "credential store write failed"}`
     );
   }
-  const config2 = configFromToken(token);
-  await writeStoredSiftConfig({ homeDir: input.homeDir, config: config2 });
+  const config = configFromToken(token);
+  await writeStoredSiftConfig({ homeDir: input.homeDir, config });
   if (oldProfile !== void 0) {
     const oldSecret = await input.credentialStore.read({
       apiBaseUrl: oldProfile.apiBaseUrl,
@@ -4576,6 +4826,33 @@ async function authStatus(input, now, json) {
   if (profile === void 0) {
     return ok(json ? '{"auth":"none"}\n' : "Auth: none\n");
   }
+  const expired = Date.parse(profile.tokenExpiresAt) <= now.getTime();
+  if (expired) {
+    return staleStoredStatus(
+      profile,
+      "expired",
+      "Stored Sift CLI auth has expired; run `sift login` again.",
+      json
+    );
+  }
+  let secret;
+  try {
+    secret = await input.credentialStore.read({
+      apiBaseUrl: profile.apiBaseUrl,
+      tokenId: profile.tokenId
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Stored Sift credential store could not be read; run `sift login` again.";
+    return staleStoredStatus(profile, "credential_store_unavailable", message, json);
+  }
+  if (secret === void 0) {
+    return staleStoredStatus(
+      profile,
+      "credential_missing",
+      "Stored Sift credential store secret is missing; run `sift login` again.",
+      json
+    );
+  }
   return ok(
     json ? `${JSON.stringify({ auth: "stored", ...profile })}
 ` : [
@@ -4586,6 +4863,24 @@ async function authStatus(input, now, json) {
       `Workspace: ${profile.workspaceId}`,
       `Brain: ${profile.brainId}`,
       `Capabilities: ${profile.capabilities.join(", ")}`,
+      ""
+    ].join("\n")
+  );
+}
+function staleStoredStatus(profile, reason, message, json) {
+  if (json) {
+    return ok(
+      `${JSON.stringify({ auth: "stored", status: "stale", reason, message, ...profile })}
+`
+    );
+  }
+  return ok(
+    [
+      "Auth: stale",
+      `Reason: ${reason}`,
+      message,
+      `API: ${profile.apiBaseUrl}`,
+      `Token: ${profile.tokenLabel}`,
       ""
     ].join("\n")
   );
@@ -4681,6 +4976,244 @@ function failJson(message) {
   };
 }
 
+// src/roamMcpReader.ts
+import { spawn } from "child_process";
+function createRoamMcpReader(input = {}) {
+  return {
+    async exportPages(request) {
+      const client = createRoamMcpJsonLineClient({
+        command: input.command ?? "npx",
+        args: input.args ?? ["-y", "@roam-research/roam-mcp"],
+        spawnProcess: input.spawnProcess ?? spawn
+      });
+      try {
+        return await exportRoamPagesFromMcp(client, request);
+      } finally {
+        await client.close();
+      }
+    }
+  };
+}
+async function exportRoamPagesFromMcp(client, input) {
+  const graphId = await resolveGraphId(client, input.graph);
+  await client.callTool("get_graph_guidelines", graphArgs(graphId)).catch(() => void 0);
+  const tuples = input.scope === "sift_tag" ? await queryMarkedPageTuples(client, graphId, input.limit) : await queryWholeGraphPageTuples(client, graphId, input.limit);
+  const records = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const tuple of tuples) {
+    const key = tuple.uid ?? tuple.title;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const markdown = await fetchPageMarkdown(client, graphId, tuple);
+    records.push({
+      graphId,
+      pageUid: tuple.uid ?? stableFallbackUid(tuple.title),
+      pageTitle: tuple.title,
+      markdown,
+      scope: input.scope,
+      blockCount: estimateBlockCount(markdown),
+      importedAt: input.now.toISOString()
+    });
+  }
+  return records;
+}
+async function resolveGraphId(client, graph) {
+  if (graph !== void 0) return graph;
+  const result = await client.callTool("list_graphs", {});
+  const parsed = parseToolJson(result);
+  const graphId = firstGraphId(parsed);
+  if (graphId !== void 0) return graphId;
+  const message = errorMessageFromParsedTool(parsed);
+  if (message !== void 0) throw new Error(message);
+  return "local-graph";
+}
+async function queryMarkedPageTuples(client, graphId, limit) {
+  const result = await client.callTool("datalog_query", {
+    ...graphArgs(graphId),
+    query: '[:find ?title ?uid :where [?tag :node/title "Sift"] [?block :block/refs ?tag] [?block :block/page ?page] [?page :node/title ?title] [?page :block/uid ?uid]]'
+  });
+  return tuplesFromToolResult(result).slice(0, limit);
+}
+async function queryWholeGraphPageTuples(client, graphId, limit) {
+  const result = await client.callTool("datalog_query", {
+    ...graphArgs(graphId),
+    query: "[:find ?title ?uid :where [?page :node/title ?title] [?page :block/uid ?uid]]"
+  });
+  return tuplesFromToolResult(result).slice(0, limit);
+}
+async function fetchPageMarkdown(client, graphId, tuple) {
+  const result = await client.callTool("get_page", {
+    ...graphArgs(graphId),
+    ...tuple.uid === void 0 ? { title: tuple.title } : { uid: tuple.uid }
+  });
+  const text = toolText(result);
+  const parsed = parseJsonIfPossible(text);
+  const markdown = markdownFromParsed(parsed) ?? text;
+  return stripRoamMetadataTags(markdown).trim();
+}
+function graphArgs(graphId) {
+  return { graph: graphId };
+}
+function tuplesFromToolResult(result) {
+  const parsed = parseToolJson(result);
+  const values = candidateArrays(parsed);
+  const tuples = [];
+  for (const value of values) {
+    if (Array.isArray(value) && typeof value[0] === "string") {
+      tuples.push({ title: value[0], ...typeof value[1] === "string" ? { uid: value[1] } : {} });
+    } else if (isRecord(value)) {
+      const title = stringProperty(value, ["title", "pageTitle", "name"]);
+      const uid = stringProperty(value, ["uid", "pageUid"]);
+      if (title !== void 0) tuples.push({ title, ...uid === void 0 ? {} : { uid } });
+    }
+  }
+  return tuples;
+}
+function parseToolJson(result) {
+  const text = toolText(result);
+  return parseJsonIfPossible(text);
+}
+function toolText(result) {
+  if (isRecord(result) && Array.isArray(result.content)) {
+    return result.content.flatMap((item) => isRecord(item) && typeof item.text === "string" ? [item.text] : []).join("\n").trim();
+  }
+  return typeof result === "string" ? result : JSON.stringify(result);
+}
+function parseJsonIfPossible(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+function candidateArrays(value) {
+  if (Array.isArray(value)) return value;
+  if (!isRecord(value)) return [];
+  for (const key of ["results", "result", "data", "rows", "pages"]) {
+    const candidate = value[key];
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+function markdownFromParsed(value) {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) return void 0;
+  return stringProperty(value, ["markdown", "content", "text"]);
+}
+function firstGraphId(value) {
+  const graphs = isRecord(value) && Array.isArray(value.graphs) ? value.graphs : candidateArrays(value);
+  for (const graph of graphs) {
+    if (!isRecord(graph)) continue;
+    const id = stringProperty(graph, ["nickname", "graph", "name", "id"]);
+    if (id !== void 0) return id;
+  }
+  return void 0;
+}
+function errorMessageFromParsedTool(value) {
+  if (!isRecord(value) || !isRecord(value.error)) return void 0;
+  const message = value.error.message;
+  return typeof message === "string" ? message : void 0;
+}
+function stringProperty(record, keys) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return void 0;
+}
+function stripRoamMetadataTags(markdown) {
+  return markdown.replace(/<roam\b[^>]*>/giu, "").replace(/<\/roam>/giu, "");
+}
+function estimateBlockCount(markdown) {
+  const lines = markdown.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  return Math.max(1, lines.length);
+}
+function stableFallbackUid(title) {
+  return title.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 80);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function createRoamMcpJsonLineClient(input) {
+  const child = input.spawnProcess(input.command, input.args, {
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  child.stderr.resume();
+  child.stdout.setEncoding("utf8");
+  let nextId = 1;
+  let buffer = "";
+  const pending = /* @__PURE__ */ new Map();
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line.length > 0) handleJsonRpcLine(line, pending);
+      newline = buffer.indexOf("\n");
+    }
+  });
+  child.on("error", (error) => {
+    for (const entry of pending.values()) entry.reject(error);
+    pending.clear();
+  });
+  child.on("exit", () => {
+    for (const entry of pending.values()) entry.reject(new Error("Roam MCP server exited."));
+    pending.clear();
+  });
+  const request = (method, params) => {
+    const id = nextId;
+    nextId += 1;
+    const promise = new Promise((resolve2, reject) => {
+      pending.set(id, { resolve: resolve2, reject });
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}
+`);
+    return promise;
+  };
+  const initialized = request("initialize", {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: { name: "sift-roam-import", version: "0.1.0" }
+  }).then(() => {
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}
+`
+    );
+  });
+  return {
+    async callTool(name, args) {
+      await initialized;
+      return request("tools/call", { name, arguments: args });
+    },
+    async close() {
+      child.stdin.end();
+      child.kill("SIGTERM");
+    }
+  };
+}
+function handleJsonRpcLine(line, pending) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (typeof parsed.id !== "number") return;
+  const entry = pending.get(parsed.id);
+  if (entry === void 0) return;
+  pending.delete(parsed.id);
+  if (parsed.error !== void 0) {
+    entry.reject(
+      new Error(
+        typeof parsed.error.message === "string" ? parsed.error.message : "Roam MCP error."
+      )
+    );
+    return;
+  }
+  entry.resolve(parsed.result);
+}
+
 // src/bin/sift.ts
 var credentialStore = createMacOSKeychainStore();
 var authCommands = createSiftCliAuthCommands({
@@ -4689,51 +5222,92 @@ var authCommands = createSiftCliAuthCommands({
   credentialStore,
   fetch
 });
-var loadedAuth = await authCommands.loadAuth();
-var config = loadedAuth?.config ?? {
-  apiBaseUrl: "",
-  tokenLabel: "unset",
-  workspaceId: "",
-  brainId: "",
-  principalId: "",
-  capabilities: []
-};
 var { argv, agentName } = extractAgentName(process.argv.slice(2), process.env.SIFT_AGENT);
-var result = await runSiftCli({
-  argv,
-  config,
-  readStdin,
-  agentName,
-  executor: loadedAuth === void 0 ? void 0 : createHostedApiExecutor({
-    apiBaseUrl: loadedAuth.config.apiBaseUrl,
-    token: loadedAuth.token,
-    workspaceId: loadedAuth.config.workspaceId,
-    brainId: loadedAuth.config.brainId,
-    agentName
-  }),
-  authCommands,
-  mcpServer: {
-    serve: async ({ config: config2, executor }) => {
-      if (executor === void 0) {
-        throw new Error(
-          "Not signed in. Run 'sift login' to authenticate, then 'sift mcp serve' to start the local MCP server."
-        );
+var startupAuth = await loadAuthForStartup(authCommands, argv);
+if (startupAuth.ok === false) {
+  process.stderr.write(`${startupAuth.message}
+`);
+  process.exitCode = 1;
+} else {
+  const loadedAuth = startupAuth.loadedAuth;
+  const config = loadedAuth?.config ?? {
+    apiBaseUrl: "",
+    tokenLabel: "unset",
+    workspaceId: "",
+    brainId: "",
+    principalId: "",
+    capabilities: []
+  };
+  const result = await runSiftCli({
+    argv,
+    config,
+    readStdin,
+    agentName,
+    executor: loadedAuth === void 0 ? void 0 : createHostedApiExecutor({
+      apiBaseUrl: loadedAuth.config.apiBaseUrl,
+      token: loadedAuth.token,
+      workspaceId: loadedAuth.config.workspaceId,
+      brainId: loadedAuth.config.brainId,
+      agentName
+    }),
+    roamReader: createRoamMcpReader(),
+    roamImporter: loadedAuth === void 0 ? void 0 : createSiftRoamImportClient({
+      apiBaseUrl: loadedAuth.config.apiBaseUrl,
+      token: loadedAuth.token,
+      workspaceId: loadedAuth.config.workspaceId
+    }),
+    authCommands,
+    mcpServer: {
+      serve: async ({ config: config2, executor }) => {
+        if (executor === void 0) {
+          throw new Error(
+            "Not signed in. Run 'sift login' to authenticate, then 'sift mcp serve' to start the local MCP server."
+          );
+        }
+        const { createLocalMcpStdioServer: createLocalMcpStdioServer2 } = await Promise.resolve().then(() => (init_dist(), dist_exports));
+        return createLocalMcpStdioServer2({
+          input: process.stdin,
+          output: process.stdout,
+          error: process.stderr
+        }).serve({
+          capabilities: config2.capabilities,
+          executor
+        });
       }
-      const { createLocalMcpStdioServer: createLocalMcpStdioServer2 } = await Promise.resolve().then(() => (init_dist(), dist_exports));
-      return createLocalMcpStdioServer2({
-        input: process.stdin,
-        output: process.stdout,
-        error: process.stderr
-      }).serve({
-        capabilities: config2.capabilities,
-        executor
-      });
     }
+  });
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  process.exitCode = result.exitCode;
+}
+async function loadAuthForStartup(commands, args) {
+  try {
+    const loadedAuth = await commands.loadAuth();
+    if (loadedAuth === void 0 && !canRunWithoutLoadedAuth(args)) {
+      return { ok: false, message: missingAuthMessage(args) };
+    }
+    return { ok: true, loadedAuth };
+  } catch (error) {
+    if (canRunWithoutLoadedAuth(args)) {
+      return { ok: true, loadedAuth: void 0 };
+    }
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Failed to load Sift CLI auth."
+    };
   }
-});
-process.stdout.write(result.stdout);
-process.stderr.write(result.stderr);
-process.exitCode = result.exitCode;
+}
+function missingAuthMessage(args) {
+  const commandArgs = args.filter((arg) => arg !== "--json");
+  const [group, command] = commandArgs;
+  const capability = group === "roam" && command === "import" ? " --capability record:read,source:manage" : "";
+  return `Not signed in. Run 'npx -y @sift-wiki/cli@latest login --api-base-url ${DEFAULT_SIFT_API_BASE_URL}${capability}', then retry this command.`;
+}
+function canRunWithoutLoadedAuth(args) {
+  const commandArgs = args.filter((arg) => arg !== "--json");
+  const [group, command] = commandArgs;
+  return group === void 0 || group === "help" || group === "--help" || group === "doctor" || group === "skill" || group === "login" || group === "logout" || group === "auth" && command === "status";
+}
 function extractAgentName(args, envAgentName) {
   const flagIndex = args.indexOf("--as-agent");
   if (flagIndex !== -1 && args[flagIndex + 1] !== void 0) {
